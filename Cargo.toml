@@ -1,5 +1,5 @@
 [package]
-name = "haec-baseline"
+name = "ont-haec-rs"
 version = "0.1.0"
 edition = "2021"
 
