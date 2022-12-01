@@ -1,6 +1,6 @@
 use clap::Parser;
 
-use haec_baseline::error_correction;
+use ont_haec_rs::error_correction;
 
 #[derive(Parser)]
 #[command(author, version, about)]

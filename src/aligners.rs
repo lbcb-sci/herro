@@ -1,6 +1,6 @@
 pub mod wfa;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CigarOp {
     MATCH(u32),
     MISMATCH(u32),
@@ -18,4 +18,19 @@ impl From<(u32, char)> for CigarOp {
             _ => panic!("Invalid cigar op {}", cigar.1),
         }
     }
+}
+
+#[inline]
+fn complement(base: char) -> char {
+    match base {
+        'A' => 'T',
+        'C' => 'G',
+        'G' => 'C',
+        'T' => 'A',
+        _ => panic!("Unknown base"),
+    }
+}
+
+pub fn reverse_complement(seq: &str) -> String {
+    seq.chars().rev().map(|c| complement(c)).collect()
 }
