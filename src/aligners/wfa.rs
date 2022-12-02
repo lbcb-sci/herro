@@ -27,22 +27,16 @@ impl WFAAlignerBuilder {
 
     pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) {
         match metric {
-            WFADistanceMetric::INDEL => {
+            WFADistanceMetric::Indel => {
                 self.attributes.distance_metric = wfa::distance_metric_t_indel;
             }
-            WFADistanceMetric::EDIT => {
+            WFADistanceMetric::Edit => {
                 self.attributes.distance_metric = wfa::distance_metric_t_edit;
             }
-            WFADistanceMetric::GAP_LINEAR => {
+            WFADistanceMetric::GapLinear => {
                 self.attributes.distance_metric = wfa::distance_metric_t_gap_linear;
             }
-            WFADistanceMetric::GAP_AFFINE {
-                match_,
-                mismatch,
-                gap_opening,
-                gap_extension,
-            }
-            | WFADistanceMetric::GAP_AFFINE2P {
+            WFADistanceMetric::GapAffine {
                 match_,
                 mismatch,
                 gap_opening,
@@ -53,6 +47,22 @@ impl WFAAlignerBuilder {
                 self.attributes.affine_penalties.mismatch = mismatch;
                 self.attributes.affine_penalties.gap_opening = gap_opening;
                 self.attributes.affine_penalties.gap_extension = gap_extension;
+            }
+            WFADistanceMetric::GapAffine2p {
+                match_,
+                mismatch,
+                gap_opening1,
+                gap_extension1,
+                gap_opening2,
+                gap_extension2,
+            } => {
+                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine;
+                self.attributes.affine2p_penalties.match_ = match_;
+                self.attributes.affine2p_penalties.mismatch = mismatch;
+                self.attributes.affine2p_penalties.gap_opening1 = gap_opening1;
+                self.attributes.affine2p_penalties.gap_extension1 = gap_extension1;
+                self.attributes.affine2p_penalties.gap_opening2 = gap_opening2;
+                self.attributes.affine2p_penalties.gap_extension2 = gap_extension2;
             }
         }
     }
@@ -94,27 +104,29 @@ impl WFAAlignerBuilder {
 }
 
 pub enum WFADistanceMetric {
-    INDEL,
-    EDIT,
-    GAP_LINEAR,
-    GAP_AFFINE {
+    Indel,
+    Edit,
+    GapLinear,
+    GapAffine {
         match_: i32,
         mismatch: i32,
         gap_opening: i32,
         gap_extension: i32,
     },
-    GAP_AFFINE2P {
+    GapAffine2p {
         match_: i32,
         mismatch: i32,
-        gap_opening: i32,
-        gap_extension: i32,
+        gap_opening1: i32,
+        gap_extension1: i32,
+        gap_opening2: i32,
+        gap_extension2: i32,
     },
 }
 
 #[repr(u32)]
 pub enum WFAAlignmentScope {
-    SCORE = wfa::alignment_scope_t_compute_score,
-    ALIGNMENT = wfa::alignment_scope_t_compute_alignment,
+    Score = wfa::alignment_scope_t_compute_score,
+    Alignment = wfa::alignment_scope_t_compute_alignment,
 }
 
 #[repr(u32)]
@@ -194,7 +206,10 @@ fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
 
 #[cfg(test)]
 mod tests {
-    use crate::aligners::CigarOp;
+    use crate::aligners::{
+        wfa::{WFAAlignerBuilder, WFADistanceMetric},
+        CigarOp,
+    };
 
     use super::WFAAligner;
 
@@ -203,7 +218,14 @@ mod tests {
         let query = "AACGTTAGAT";
         let target = "TTAGAT";
 
-        let aligner = WFAAligner::new();
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: 0,
+            mismatch: 6,
+            gap_opening: 4,
+            gap_extension: 2,
+        });
+        let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(cigar, [CigarOp::INSERTION(4), CigarOp::MATCH(6)]);
@@ -214,7 +236,14 @@ mod tests {
         let query = "AACGTTAGAT";
         let target = "TTAGTTGAT";
 
-        let aligner = WFAAligner::new();
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: 0,
+            mismatch: 6,
+            gap_opening: 4,
+            gap_extension: 2,
+        });
+        let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -234,7 +263,14 @@ mod tests {
         let query = "AATTAGATTCACACCCTTTTTTTTT";
         let target = "GGGGCCCGGGG";
 
-        let aligner = WFAAligner::new();
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: 0,
+            mismatch: 6,
+            gap_opening: 4,
+            gap_extension: 2,
+        });
+        let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
