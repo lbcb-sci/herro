@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::fmt;
 use std::{
     collections::{HashMap, HashSet},
@@ -5,6 +6,8 @@ use std::{
     io::{BufRead, BufReader},
     path::Path,
 };
+
+use crate::aligners::CigarOp;
 
 #[derive(Debug)]
 pub enum Strand {
@@ -34,7 +37,7 @@ pub struct Overlap {
     pub tlen: u32,
     pub tstart: u32,
     pub tend: u32,
-    pub cigar: Option<String>,
+    pub cigar: Option<VecDeque<CigarOp>>,
 }
 
 impl Overlap {

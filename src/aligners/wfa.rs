@@ -12,29 +12,6 @@ mod wfa {
     include!(concat!(env!("OUT_DIR"), "/bindings_wfa.rs"));
 }
 
-pub struct WFAAlignerBuilder {
-    attributes: wfa::wavefront_aligner_attr_t,
-}
-
-impl WFAAlignerBuilder {
-    pub fn new() -> Self {
-        unsafe {
-            WFAAlignerBuilder {
-                attributes: wfa::wavefront_aligner_attr_default,
-            }
-        }
-    }
-
-    pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) -> &mut Self {
-        self.attributes.distance_metric = metric as u32;
-        self
-    }
-}
-
-pub enum WFADistanceMetric {
-    INDEL = wfa::distance_metric_t_indel as isize,
-}
-
 pub struct WFAAligner {
     aligner: *mut wfa::_wavefront_aligner_t,
 }
@@ -83,18 +60,22 @@ impl WFAAligner {
                 query.len() as i32,
             );
 
-            let cigar_start = (*(*self.aligner).cigar)
-                .operations
-                .offset((*(*self.aligner).cigar).begin_offset as isize);
-            let size = (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
+            if status == 0 {
+                let cigar_start = (*(*self.aligner).cigar)
+                    .operations
+                    .offset((*(*self.aligner).cigar).begin_offset as isize);
+                let size =
+                    (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
 
-            let cigar = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                cigar_start as *mut u8,
-                size as usize,
-            ));
+                let cigar = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    cigar_start as *mut u8,
+                    size as usize,
+                ));
 
-            //println!("Score: {}", (*(*self.aligner).cigar).score);
-            Some(cigar_merge_ops(cigar))
+                Some(cigar_merge_ops(cigar)) // Alignment successful
+            } else {
+                None // Unsuccessful
+            }
         }
     }
 }
@@ -105,6 +86,8 @@ impl Drop for WFAAligner {
     }
 }
 
+/// SAFETY: It is safe to send WFAAligner to another thread since it doesn't share the ownership
+/// of aligner
 unsafe impl Send for WFAAligner {}
 
 fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
