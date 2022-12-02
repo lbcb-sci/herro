@@ -12,41 +12,134 @@ mod wfa {
     include!(concat!(env!("OUT_DIR"), "/bindings_wfa.rs"));
 }
 
+pub struct WFAAlignerBuilder {
+    attributes: wfa::wavefront_aligner_attr_t,
+}
+
+impl WFAAlignerBuilder {
+    pub fn new() -> Self {
+        unsafe {
+            WFAAlignerBuilder {
+                attributes: wfa::wavefront_aligner_attr_default,
+            }
+        }
+    }
+
+    pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) {
+        match metric {
+            WFADistanceMetric::Indel => {
+                self.attributes.distance_metric = wfa::distance_metric_t_indel;
+            }
+            WFADistanceMetric::Edit => {
+                self.attributes.distance_metric = wfa::distance_metric_t_edit;
+            }
+            WFADistanceMetric::GapLinear => {
+                self.attributes.distance_metric = wfa::distance_metric_t_gap_linear;
+            }
+            WFADistanceMetric::GapAffine {
+                match_,
+                mismatch,
+                gap_opening,
+                gap_extension,
+            }
+            | WFADistanceMetric::GapAffine2p {
+                match_,
+                mismatch,
+                gap_opening,
+                gap_extension,
+            } => {
+                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine;
+                self.attributes.affine_penalties.match_ = match_;
+                self.attributes.affine_penalties.mismatch = mismatch;
+                self.attributes.affine_penalties.gap_opening = gap_opening;
+                self.attributes.affine_penalties.gap_extension = gap_extension;
+            }
+        }
+    }
+
+    pub fn set_alignment_scope(&mut self, scope: WFAAlignmentScope) {
+        self.attributes.alignment_scope = scope as u32;
+    }
+
+    pub fn set_alignment_span(&mut self, span: WFAAlignmentSpan) {
+        match span {
+            WFAAlignmentSpan::EndToEnd => {
+                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
+            }
+            WFAAlignmentSpan::EndsFree {
+                pattern_begin_free,
+                pattern_end_free,
+                text_begin_free,
+                text_end_free,
+            } => {
+                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
+                self.attributes.alignment_form.pattern_begin_free = pattern_begin_free;
+                self.attributes.alignment_form.pattern_end_free = pattern_end_free;
+                self.attributes.alignment_form.text_begin_free = text_begin_free;
+                self.attributes.alignment_form.text_end_free = text_end_free;
+            }
+        }
+    }
+
+    pub fn set_memory_mode(&mut self, mode: WFAMemoryMode) {
+        self.attributes.memory_mode = mode as u32;
+    }
+
+    pub fn build(&mut self) -> WFAAligner {
+        unsafe {
+            let aligner = wfa::wavefront_aligner_new(&mut self.attributes);
+            WFAAligner { aligner }
+        }
+    }
+}
+
+pub enum WFADistanceMetric {
+    Indel,
+    Edit,
+    GapLinear,
+    GapAffine {
+        match_: i32,
+        mismatch: i32,
+        gap_opening: i32,
+        gap_extension: i32,
+    },
+    GapAffine2p {
+        match_: i32,
+        mismatch: i32,
+        gap_opening: i32,
+        gap_extension: i32,
+    },
+}
+
+#[repr(u32)]
+pub enum WFAAlignmentScope {
+    SCORE = wfa::alignment_scope_t_compute_score,
+    ALIGNMENT = wfa::alignment_scope_t_compute_alignment,
+}
+
+#[repr(u32)]
+pub enum WFAAlignmentSpan {
+    EndToEnd,
+    EndsFree {
+        pattern_begin_free: i32,
+        pattern_end_free: i32,
+        text_begin_free: i32,
+        text_end_free: i32,
+    },
+}
+
+#[repr(u32)]
+pub enum WFAMemoryMode {
+    HIGH = wfa::wavefront_memory_t_wavefront_memory_high,
+    MED = wfa::wavefront_memory_t_wavefront_memory_med,
+    LOW = wfa::wavefront_memory_t_wavefront_memory_low,
+    ULTRALOW = wfa::wavefront_memory_t_wavefront_memory_ultralow,
+}
 pub struct WFAAligner {
     aligner: *mut wfa::_wavefront_aligner_t,
 }
 
 impl WFAAligner {
-    pub fn new() -> Self {
-        unsafe {
-            let mut attributes = wfa::wavefront_aligner_attr_default;
-
-            // Distance metrics - gap affine
-            attributes.distance_metric = wfa::distance_metric_t_gap_affine;
-            attributes.affine_penalties.mismatch = 6;
-            attributes.affine_penalties.gap_opening = 4;
-            attributes.affine_penalties.gap_extension = 2;
-
-            // Alignment scope - alignment scope
-            attributes.alignment_scope = wfa::alignment_scope_t_compute_alignment;
-
-            // Alignment span - ends-free
-            attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
-            //attributes.alignment_form.pattern_begin_free = 5;
-            //attributes.alignment_form.pattern_end_free = 5;
-            //attributes.alignment_form.text_begin_free = 5;
-            //attributes.alignment_form.text_end_free = 5;
-
-            // Memory mode - high
-            attributes.memory_mode = wfa::wavefront_memory_t_wavefront_memory_high;
-
-            let aligner = wfa::wavefront_aligner_new(&mut attributes);
-            wfa::wavefront_aligner_set_max_num_threads(aligner, 7);
-
-            WFAAligner { aligner }
-        }
-    }
-
     pub fn align(&self, query: &str, target: &str) -> Option<VecDeque<CigarOp>> {
         unsafe {
             let q_seq: &[i8] = std::mem::transmute(query.as_bytes());
@@ -107,16 +200,14 @@ fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
 
 #[cfg(test)]
 mod tests {
-    use crate::aligners::CigarOp;
-
-    use super::WFAAligner;
+    use crate::aligners::{wfa::WFAAlignerBuilder, CigarOp};
 
     #[test]
     fn test_aligner() {
         let query = "AACGTTAGAT";
         let target = "TTAGAT";
 
-        let aligner = WFAAligner::new();
+        let aligner = WFAAlignerBuilder::new().build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(cigar, [CigarOp::INSERTION(4), CigarOp::MATCH(6)]);
@@ -127,7 +218,7 @@ mod tests {
         let query = "AACGTTAGAT";
         let target = "TTAGTTGAT";
 
-        let aligner = WFAAligner::new();
+        let aligner = WFAAlignerBuilder::new().build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -147,7 +238,7 @@ mod tests {
         let query = "AATTAGATTCACACCCTTTTTTTTT";
         let target = "GGGGCCCGGGG";
 
-        let aligner = WFAAligner::new();
+        let aligner = WFAAlignerBuilder::new().build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(

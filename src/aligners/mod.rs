@@ -54,7 +54,7 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
         .par_iter_mut()
         .progress_count(n_overlaps as u64)
         .for_each_with(aligners, |aligners, o| {
-            let aligner = aligners.get_or(|| wfa::WFAAligner::new());
+            let aligner = aligners.get_or(|| wfa::WFAAlignerBuilder::new().build());
 
             let query = &reads[o.qid as usize].seq[o.qstart as usize..o.qend as usize];
             let query = match o.strand {
