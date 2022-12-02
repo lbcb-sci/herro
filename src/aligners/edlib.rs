@@ -19,21 +19,6 @@ lazy_static! {
     );
 }
 
-#[inline]
-fn complement(base: char) -> char {
-    match base {
-        'A' => 'T',
-        'C' => 'G',
-        'G' => 'C',
-        'T' => 'A',
-        _ => panic!("Unknown base"),
-    }
-}
-
-fn reverse_complement(seq: &str) -> String {
-    seq.chars().rev().map(|c| complement(c)).collect()
-}
-
 pub fn align(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
     for overlap in overlaps {
         let tseq = &reads[overlap.tid as usize].seq[overlap.tstart as usize..overlap.tend as usize];

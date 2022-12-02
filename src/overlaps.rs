@@ -69,7 +69,7 @@ impl Overlap {
 }
 
 const EXTEND_LENGTH: u32 = 500;
-const OL_THRESHOLD: u32 = 1;
+const OL_THRESHOLD: u32 = 500;
 const DOUBLE_OL_THRESHOLD: u32 = 2 * OL_THRESHOLD;
 
 pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Vec<Overlap> {
@@ -108,6 +108,7 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
         if processed.contains(&(qid, tid)) {
             continue; // We assume the first one is the best one
         }
+        processed.insert((qid, tid));
 
         let ratio = (tend - tstart) as f64 / (qend - qstart) as f64;
         if ratio < 0.9 || ratio > 1.111 {
@@ -118,7 +119,6 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         overlaps.push(overlap);
-        processed.insert((qid, tid));
 
         /*
         rid_to_oids
@@ -172,12 +172,12 @@ fn extend_overlap(overlap: &mut Overlap) {
 
 fn is_valid_overlap(overlap: &Overlap) -> bool {
     // Query contained in target
-    if (overlap.qlen - (overlap.qend - overlap.qstart)) <= DOUBLE_OL_THRESHOLD {
+    if (overlap.qlen - (overlap.qend - overlap.qstart)) <= OL_THRESHOLD {
         return true;
     }
 
     // Target contained in query
-    if (overlap.tlen - (overlap.tend - overlap.tstart)) <= DOUBLE_OL_THRESHOLD {
+    if (overlap.tlen - (overlap.tend - overlap.tstart)) <= OL_THRESHOLD {
         return true;
     }
 
@@ -209,14 +209,22 @@ pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
     //let primary_overlaps = find_primary_overlaps(&overlaps);
     //println!("Number of primary overlaps {}", primary_overlaps.len());
 
+    /*overlaps
+    .into_iter()
+    .enumerate()
+    //.filter(|(i, _)| primary_overlaps.contains(i)) // Keep only primary overlaps
+    .map(|(_, o)| {
+        //extend_overlap(&mut o);
+        o
+    })
+    .filter(|o| {
+        let b = is_valid_overlap(o);
+        b
+    })
+    .collect()*/
+
     overlaps
         .into_iter()
-        .enumerate()
-        //.filter(|(i, _)| primary_overlaps.contains(i)) // Keep only primary overlaps
-        .map(|(_, mut o)| {
-            extend_overlap(&mut o);
-            o
-        })
         .filter(|o| {
             let b = is_valid_overlap(o);
             b

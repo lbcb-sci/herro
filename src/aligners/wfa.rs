@@ -147,10 +147,10 @@ impl WFAAligner {
 
             let status = wfa::wavefront_align(
                 self.aligner,
-                q_seq.as_ptr(),
-                query.len() as i32,
                 t_seq.as_ptr(),
                 target.len() as i32,
+                q_seq.as_ptr(),
+                query.len() as i32,
             );
 
             let cigar_start = (*(*self.aligner).cigar)
@@ -164,9 +164,6 @@ impl WFAAligner {
             ));
 
             //println!("Score: {}", (*(*self.aligner).cigar).score);
-            if (*(*self.aligner).cigar).score < -5000 {
-                println!("Cigar: {:?}", cigar_merge_ops(cigar))
-            }
             Some(cigar_merge_ops(cigar))
         }
     }
@@ -177,6 +174,8 @@ impl Drop for WFAAligner {
         unsafe { wfa::wavefront_aligner_delete(self.aligner) }
     }
 }
+
+unsafe impl Send for WFAAligner {}
 
 fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
     cigar
@@ -191,4 +190,60 @@ fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
         })
         .map_into::<CigarOp>()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::aligners::CigarOp;
+
+    use super::WFAAligner;
+
+    #[test]
+    fn test_aligner() {
+        let query = "AACGTTAGAT";
+        let target = "TTAGAT";
+
+        let aligner = WFAAligner::new();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(cigar, [CigarOp::INSERTION(4), CigarOp::MATCH(6)]);
+    }
+
+    #[test]
+    fn test_aligner2() {
+        let query = "AACGTTAGAT";
+        let target = "TTAGTTGAT";
+
+        let aligner = WFAAligner::new();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::INSERTION(4),
+                CigarOp::MATCH(4),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(1),
+                CigarOp::DELETION(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_mis_ends() {
+        let query = "AATTAGATTCACACCCTTTTTTTTT";
+        let target = "GGGGCCCGGGG";
+
+        let aligner = WFAAligner::new();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MISMATCH(4),
+                CigarOp::MATCH(3),
+                CigarOp::MISMATCH(4)
+            ]
+        );
+    }
 }
