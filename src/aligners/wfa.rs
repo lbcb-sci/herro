@@ -33,8 +33,15 @@ impl WFAAlignerBuilder {
             WFADistanceMetric::Edit => {
                 self.attributes.distance_metric = wfa::distance_metric_t_edit;
             }
-            WFADistanceMetric::GapLinear => {
+            WFADistanceMetric::GapLinear {
+                match_,
+                mismatch,
+                indel,
+            } => {
                 self.attributes.distance_metric = wfa::distance_metric_t_gap_linear;
+                self.attributes.linear_penalties.match_ = match_;
+                self.attributes.linear_penalties.mismatch = mismatch;
+                self.attributes.linear_penalties.indel = indel;
             }
             WFADistanceMetric::GapAffine {
                 match_,
@@ -106,7 +113,11 @@ impl WFAAlignerBuilder {
 pub enum WFADistanceMetric {
     Indel,
     Edit,
-    GapLinear,
+    GapLinear {
+        match_: i32,
+        mismatch: i32,
+        indel: i32,
+    },
     GapAffine {
         match_: i32,
         mismatch: i32,
@@ -229,6 +240,172 @@ mod tests {
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(cigar, [CigarOp::INSERTION(4), CigarOp::MATCH(6)]);
+    }
+
+    #[test]
+    fn test_aligner_indel() {
+        let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
+        let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::Edit);
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MATCH(1),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(3),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(5),
+                CigarOp::MISMATCH(2),
+                CigarOp::MATCH(8),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(9)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_edit() {
+        let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
+        let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::Indel);
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::DELETION(1),
+                CigarOp::MATCH(3),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(5),
+                CigarOp::INSERTION(2),
+                CigarOp::DELETION(2),
+                CigarOp::MATCH(8),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(9)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_gap_linear() {
+        let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
+        let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapLinear {
+            match_: 0,
+            mismatch: 6,
+            indel: 2,
+        });
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::DELETION(1),
+                CigarOp::MATCH(3),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(5),
+                CigarOp::INSERTION(2),
+                CigarOp::DELETION(2),
+                CigarOp::MATCH(8),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(9)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_gap_affine() {
+        let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
+        let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: (0),
+            mismatch: (6),
+            gap_opening: (4),
+            gap_extension: (2),
+        });
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MATCH(1),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(3),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(5),
+                CigarOp::MISMATCH(2),
+                CigarOp::MATCH(8),
+                CigarOp::INSERTION(3),
+                CigarOp::MATCH(1),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(9)
+            ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_gap_affine2p() {
+        let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
+        let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine2p {
+            match_: (0),
+            mismatch: (6),
+            gap_opening1: (4),
+            gap_extension1: (2),
+            gap_opening2: (12),
+            gap_extension2: (1),
+        });
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [
+                CigarOp::MATCH(1),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(3),
+                CigarOp::INSERTION(1),
+                CigarOp::MATCH(5),
+                CigarOp::MISMATCH(2),
+                CigarOp::MATCH(8),
+                CigarOp::INSERTION(3),
+                CigarOp::MATCH(1),
+                CigarOp::MISMATCH(1),
+                CigarOp::MATCH(9)
+            ]
+        );
     }
 
     #[test]
