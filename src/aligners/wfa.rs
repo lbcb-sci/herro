@@ -176,18 +176,22 @@ impl WFAAligner {
                 query.len() as i32,
             );
 
-            let cigar_start = (*(*self.aligner).cigar)
-                .operations
-                .offset((*(*self.aligner).cigar).begin_offset as isize);
-            let size = (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
+            if status == 0 {
+                let cigar_start = (*(*self.aligner).cigar)
+                    .operations
+                    .offset((*(*self.aligner).cigar).begin_offset as isize);
+                let size =
+                    (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
 
-            let cigar = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                cigar_start as *mut u8,
-                size as usize,
-            ));
+                let cigar = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    cigar_start as *mut u8,
+                    size as usize,
+                ));
 
-            //println!("Score: {}", (*(*self.aligner).cigar).score);
-            Some(cigar_merge_ops(cigar))
+                Some(cigar_merge_ops(cigar)) // Alignment successful
+            } else {
+                None // Unsuccessful
+            }
         }
     }
 }
@@ -198,6 +202,8 @@ impl Drop for WFAAligner {
     }
 }
 
+/// SAFETY: It is safe to send WFAAligner to another thread since it doesn't share the ownership
+/// of aligner
 unsafe impl Send for WFAAligner {}
 
 fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
@@ -221,8 +227,6 @@ mod tests {
         wfa::{WFAAlignerBuilder, WFADistanceMetric},
         CigarOp,
     };
-
-    use super::WFAAligner;
 
     #[test]
     fn test_aligner() {
