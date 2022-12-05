@@ -16,3 +16,4 @@ itertools = "~0.10.5"
 rayon = "~1.6.0"
 thread_local = "~1.1.4"
 indicatif = {version = "~0.17.2", features = ["rayon"]}
+ordered-float = "~3.4.0"

@@ -9,17 +9,17 @@ use std::{
 
 use crate::aligners::CigarOp;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum Strand {
-    FORWARD,
-    REVERSE,
+    Forward,
+    Reverse,
 }
 
 impl fmt::Display for Strand {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let s = match self {
-            Self::FORWARD => '+',
-            Self::REVERSE => '-',
+            Self::Forward => '+',
+            Self::Reverse => '-',
         };
 
         write!(f, "{}", s)
@@ -93,8 +93,8 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
         let qend: u32 = data.next().unwrap().parse().unwrap();
 
         let strand = match data.next().unwrap() {
-            "+" => Strand::FORWARD,
-            "-" => Strand::REVERSE,
+            "+" => Strand::Forward,
+            "-" => Strand::Reverse,
             _ => panic!("Invalid strand character."),
         };
 
@@ -185,8 +185,8 @@ fn is_valid_overlap(overlap: &Overlap) -> bool {
     }
 
     let (qstart, qend) = match overlap.strand {
-        Strand::FORWARD => (overlap.qstart, overlap.qend),
-        Strand::REVERSE => (overlap.qlen - overlap.qend, overlap.qlen - overlap.qstart),
+        Strand::Forward => (overlap.qstart, overlap.qend),
+        Strand::Reverse => (overlap.qlen - overlap.qend, overlap.qlen - overlap.qstart),
     };
 
     // Prefix overlap between query and target

@@ -11,12 +11,22 @@ use crate::{
 
 pub mod wfa;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum CigarOp {
     MATCH(u32),
     MISMATCH(u32),
     INSERTION(u32),
     DELETION(u32),
+}
+
+impl CigarOp {
+    pub fn reverse(&self) -> Self {
+        match self {
+            Self::INSERTION(l) => Self::DELETION(*l),
+            Self::DELETION(l) => Self::INSERTION(*l),
+            _ => self.clone(),
+        }
+    }
 }
 
 impl From<(u32, char)> for CigarOp {
@@ -58,8 +68,8 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
             let query = &reads[o.qid as usize].seq[o.qstart as usize..o.qend as usize];
             let query = match o.strand {
-                overlaps::Strand::FORWARD => Cow::Borrowed(query),
-                overlaps::Strand::REVERSE => Cow::Owned(reverse_complement(query)),
+                overlaps::Strand::Forward => Cow::Borrowed(query),
+                overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
             };
 
             let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];

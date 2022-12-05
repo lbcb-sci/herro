@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ptr::NonNull};
 
 use itertools::Itertools;
 
@@ -104,7 +104,7 @@ impl WFAAlignerBuilder {
 
     pub fn build(&mut self) -> WFAAligner {
         unsafe {
-            let aligner = wfa::wavefront_aligner_new(&mut self.attributes);
+            let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
             WFAAligner { aligner }
         }
     }
