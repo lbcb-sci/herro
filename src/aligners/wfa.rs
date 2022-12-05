@@ -89,7 +89,7 @@ impl WFAAlignerBuilder {
                 text_begin_free,
                 text_end_free,
             } => {
-                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
+                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_endsfree;
                 self.attributes.alignment_form.pattern_begin_free = pattern_begin_free;
                 self.attributes.alignment_form.pattern_end_free = pattern_end_free;
                 self.attributes.alignment_form.text_begin_free = text_begin_free;
@@ -140,7 +140,6 @@ pub enum WFAAlignmentScope {
     Alignment = wfa::alignment_scope_t_compute_alignment,
 }
 
-#[repr(u32)]
 pub enum WFAAlignmentSpan {
     EndToEnd,
     EndsFree {
@@ -224,7 +223,7 @@ fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
 #[cfg(test)]
 mod tests {
     use crate::aligners::{
-        wfa::{WFAAlignerBuilder, WFADistanceMetric},
+        wfa::{WFAAlignerBuilder, WFAAlignmentScope, WFAAlignmentSpan, WFADistanceMetric},
         CigarOp,
     };
 
@@ -252,7 +251,7 @@ mod tests {
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
         let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::Edit);
+        builder.set_distance_metric(WFADistanceMetric::Indel);
         let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
@@ -260,11 +259,13 @@ mod tests {
             cigar,
             [
                 CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
+                CigarOp::INSERTION(1),
+                CigarOp::DELETION(1),
                 CigarOp::MATCH(3),
                 CigarOp::INSERTION(1),
                 CigarOp::MATCH(5),
-                CigarOp::MISMATCH(2),
+                CigarOp::INSERTION(2),
+                CigarOp::DELETION(2),
                 CigarOp::MATCH(8),
                 CigarOp::INSERTION(1),
                 CigarOp::MATCH(1),
@@ -282,7 +283,7 @@ mod tests {
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
         let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::Indel);
+        builder.set_distance_metric(WFADistanceMetric::Edit);
         let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
@@ -290,13 +291,11 @@ mod tests {
             cigar,
             [
                 CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::DELETION(1),
+                CigarOp::MISMATCH(1),
                 CigarOp::MATCH(3),
                 CigarOp::INSERTION(1),
                 CigarOp::MATCH(5),
-                CigarOp::INSERTION(2),
-                CigarOp::DELETION(2),
+                CigarOp::MISMATCH(2),
                 CigarOp::MATCH(8),
                 CigarOp::INSERTION(1),
                 CigarOp::MATCH(1),
@@ -409,6 +408,28 @@ mod tests {
                 CigarOp::MISMATCH(1),
                 CigarOp::MATCH(9)
             ]
+        );
+    }
+
+    #[test]
+    fn test_aligner_ends_free() {
+        let query = "AATTTAAGTCTAGGCTACTTTCGGTACTTTCTT";
+        let target = "AATTAATTTAAGTCTAGGCTACTTTCGGTACTTTGTTCTT";
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::Indel);
+        builder.set_alignment_span(WFAAlignmentSpan::EndsFree {
+            pattern_begin_free: (10),
+            pattern_end_free: (10),
+            text_begin_free: (10),
+            text_end_free: (10),
+        });
+        let aligner = builder.build();
+        let cigar = aligner.align(query, target).unwrap();
+
+        assert_eq!(
+            cigar,
+            [CigarOp::MATCH(30), CigarOp::MISMATCH(1), CigarOp::MATCH(2)]
         );
     }
 
