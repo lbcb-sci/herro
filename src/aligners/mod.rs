@@ -13,17 +13,17 @@ pub mod wfa;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum CigarOp {
-    MATCH(u32),
-    MISMATCH(u32),
-    INSERTION(u32),
-    DELETION(u32),
+    Match(u32),
+    Mismatch(u32),
+    Insertion(u32),
+    Deletion(u32),
 }
 
 impl CigarOp {
     pub fn reverse(&self) -> Self {
         match self {
-            Self::INSERTION(l) => Self::DELETION(*l),
-            Self::DELETION(l) => Self::INSERTION(*l),
+            Self::Insertion(l) => Self::Deletion(*l),
+            Self::Deletion(l) => Self::Insertion(*l),
             _ => self.clone(),
         }
     }
@@ -32,10 +32,10 @@ impl CigarOp {
 impl From<(u32, char)> for CigarOp {
     fn from(cigar: (u32, char)) -> Self {
         match cigar.1 {
-            'M' => CigarOp::MATCH(cigar.0),
-            'X' => CigarOp::MISMATCH(cigar.0),
-            'I' => CigarOp::INSERTION(cigar.0),
-            'D' => CigarOp::DELETION(cigar.0),
+            'M' => CigarOp::Match(cigar.0),
+            'X' => CigarOp::Mismatch(cigar.0),
+            'I' => CigarOp::Insertion(cigar.0),
+            'D' => CigarOp::Deletion(cigar.0),
             _ => panic!("Invalid cigar op {}", cigar.1),
         }
     }

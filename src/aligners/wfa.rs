@@ -242,7 +242,7 @@ mod tests {
         let aligner = builder.build();
         let cigar = aligner.align(query, target).unwrap();
 
-        assert_eq!(cigar, [CigarOp::INSERTION(4), CigarOp::MATCH(6)]);
+        assert_eq!(cigar, [CigarOp::Insertion(4), CigarOp::Match(6)]);
     }
 
     #[test]
@@ -258,21 +258,21 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::DELETION(1),
-                CigarOp::MATCH(3),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(5),
-                CigarOp::INSERTION(2),
-                CigarOp::DELETION(2),
-                CigarOp::MATCH(8),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(9)
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Deletion(1),
+                CigarOp::Match(3),
+                CigarOp::Insertion(1),
+                CigarOp::Match(5),
+                CigarOp::Insertion(2),
+                CigarOp::Deletion(2),
+                CigarOp::Match(8),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(9)
             ]
         );
     }
@@ -290,19 +290,19 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(3),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(5),
-                CigarOp::MISMATCH(2),
-                CigarOp::MATCH(8),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(9)
+                CigarOp::Match(1),
+                CigarOp::Mismatch(1),
+                CigarOp::Match(3),
+                CigarOp::Insertion(1),
+                CigarOp::Match(5),
+                CigarOp::Mismatch(2),
+                CigarOp::Match(8),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(9)
             ]
         );
     }
@@ -324,21 +324,21 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::DELETION(1),
-                CigarOp::MATCH(3),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(5),
-                CigarOp::INSERTION(2),
-                CigarOp::DELETION(2),
-                CigarOp::MATCH(8),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(1),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(9)
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Deletion(1),
+                CigarOp::Match(3),
+                CigarOp::Insertion(1),
+                CigarOp::Match(5),
+                CigarOp::Insertion(2),
+                CigarOp::Deletion(2),
+                CigarOp::Match(8),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(1),
+                CigarOp::Insertion(1),
+                CigarOp::Match(9)
             ]
         );
     }
@@ -361,17 +361,17 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(3),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(5),
-                CigarOp::MISMATCH(2),
-                CigarOp::MATCH(8),
-                CigarOp::INSERTION(3),
-                CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(9)
+                CigarOp::Match(1),
+                CigarOp::Mismatch(1),
+                CigarOp::Match(3),
+                CigarOp::Insertion(1),
+                CigarOp::Match(5),
+                CigarOp::Mismatch(2),
+                CigarOp::Match(8),
+                CigarOp::Insertion(3),
+                CigarOp::Match(1),
+                CigarOp::Mismatch(1),
+                CigarOp::Match(9)
             ]
         );
     }
@@ -396,17 +396,17 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(3),
-                CigarOp::INSERTION(1),
-                CigarOp::MATCH(5),
-                CigarOp::MISMATCH(2),
-                CigarOp::MATCH(8),
-                CigarOp::INSERTION(3),
-                CigarOp::MATCH(1),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(9)
+                CigarOp::Match(1),
+                CigarOp::Mismatch(1),
+                CigarOp::Match(3),
+                CigarOp::Insertion(1),
+                CigarOp::Match(5),
+                CigarOp::Mismatch(2),
+                CigarOp::Match(8),
+                CigarOp::Insertion(3),
+                CigarOp::Match(1),
+                CigarOp::Mismatch(1),
+                CigarOp::Match(9)
             ]
         );
     }
@@ -429,7 +429,14 @@ mod tests {
 
         assert_eq!(
             cigar,
-            [CigarOp::MATCH(30), CigarOp::MISMATCH(1), CigarOp::MATCH(2)]
+            [
+                CigarOp::Deletion(4),
+                CigarOp::Match(30),
+                CigarOp::Insertion(1),
+                CigarOp::Deletion(1),
+                CigarOp::Match(2),
+                CigarOp::Deletion(3)
+            ]
         );
     }
 
@@ -451,11 +458,10 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::INSERTION(4),
-                CigarOp::MATCH(4),
-                CigarOp::MISMATCH(1),
-                CigarOp::MATCH(1),
-                CigarOp::DELETION(3),
+                CigarOp::Insertion(4),
+                CigarOp::Match(4),
+                CigarOp::Deletion(3),
+                CigarOp::Match(2),
             ]
         );
     }
@@ -463,7 +469,7 @@ mod tests {
     #[test]
     fn test_aligner_mis_ends() {
         let query = "AATTAGATTCACACCCTTTTTTTTT";
-        let target = "GGGGCCCGGGG";
+        let target = "GGGGATCCCGGGG";
 
         let mut builder = WFAAlignerBuilder::new();
         builder.set_distance_metric(WFADistanceMetric::GapAffine {
@@ -478,9 +484,14 @@ mod tests {
         assert_eq!(
             cigar,
             [
-                CigarOp::MISMATCH(4),
-                CigarOp::MATCH(3),
-                CigarOp::MISMATCH(4)
+                CigarOp::Insertion(5),
+                CigarOp::Match(1),
+                CigarOp::Deletion(3),
+                CigarOp::Match(2),
+                CigarOp::Insertion(5),
+                CigarOp::Match(3),
+                CigarOp::Insertion(9),
+                CigarOp::Deletion(4)
             ]
         );
     }

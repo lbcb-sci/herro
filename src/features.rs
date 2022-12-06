@@ -56,10 +56,10 @@ fn calculate_accuracy(cigar: &VecDeque<CigarOp>) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {
-            CigarOp::MATCH(l) => matches += l,
-            CigarOp::MISMATCH(l) => subs += l,
-            CigarOp::INSERTION(l) => ins += l,
-            CigarOp::DELETION(l) => dels += l,
+            CigarOp::Match(l) => matches += l,
+            CigarOp::Mismatch(l) => subs += l,
+            CigarOp::Insertion(l) => ins += l,
+            CigarOp::Deletion(l) => dels += l,
         };
     }
 
@@ -121,8 +121,8 @@ where
         loop {
             let (cigar_idx, op) = cigar_iter.next().unwrap();
             let tnew = match op.as_ref() {
-                CigarOp::MATCH(l) | CigarOp::MISMATCH(l) | CigarOp::DELETION(l) => tpos + *l,
-                CigarOp::INSERTION(_) => continue,
+                CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => tpos + *l,
+                CigarOp::Insertion(_) => continue,
             };
 
             let new_w = tnew / WINDOW_SIZE;
@@ -166,7 +166,7 @@ where
                 cigar_end_offset = 0; // Beginning of the new op
 
                 let (_, op) = cigar_iter.peek().unwrap(); // TODO check if this is possible
-                if let CigarOp::INSERTION(_) = op.as_ref() {
+                if let CigarOp::Insertion(_) = op.as_ref() {
                     let _ = cigar_iter.next();
 
                     cigar_end_idx = cigar_idx + 2;
