@@ -13,6 +13,7 @@ const WINDOW_SIZE: u32 = 1024;
 #[derive(Clone)]
 struct OverlapWindow<'a> {
     overlap: &'a Overlap,
+    qstart: u32,
     cigar_start_idx: usize,
     cigar_start_offset: u32,
     cigar_end_idx: usize,
@@ -22,6 +23,7 @@ struct OverlapWindow<'a> {
 impl<'a> OverlapWindow<'a> {
     fn new(
         overlap: &'a Overlap,
+        qstart: u32,
         cigar_start_idx: usize,
         cigar_start_offset: u32,
         cigar_end_idx: usize,
@@ -29,6 +31,7 @@ impl<'a> OverlapWindow<'a> {
     ) -> Self {
         OverlapWindow {
             overlap,
+            qstart,
             cigar_start_idx,
             cigar_start_offset,
             cigar_end_idx,
@@ -108,31 +111,47 @@ fn extract_windows<'a, 'b, I>(
     state: &mut WindowingState<'a>,
     overlap: &'a Overlap,
     cigar_iter: &mut Peekable<I>,
-    tstart: u32,
-    tend: u32,
+    is_target: bool,
 ) where
     I: Iterator<Item = (usize, Cow<'b, CigarOp>)>,
 {
-    let first_window = (tstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
-    let last_window = tend / WINDOW_SIZE; // semi-closed interval
-    let mut tpos = tstart;
+    let first_window;
+    let last_window;
+    let mut tpos;
+    let mut qpos = 0;
 
+    // Read is the target -> tstart
+    // Read is the query  -> qstart
+    if is_target {
+        first_window = (overlap.tstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
+        last_window = overlap.tend / WINDOW_SIZE; // semi-closed interval
+        tpos = overlap.tstart;
+    } else {
+        first_window = (overlap.qstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
+        last_window = overlap.qend / WINDOW_SIZE; // semi-closed interval
+        tpos = overlap.qstart;
+    }
+
+    let mut qstart = None;
     let mut cigar_start_idx = None;
     let mut cigar_start_offset = None;
     if tpos % WINDOW_SIZE == 0 {
+        qstart = Some(0);
         cigar_start_idx = Some(0);
         cigar_start_offset = Some(0);
     }
 
     while let Some((cigar_idx, op)) = cigar_iter.next() {
-        let tnew = match op.as_ref() {
-            CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => tpos + *l,
+        let (tnew, qnew) = match op.as_ref() {
+            CigarOp::Match(l) | CigarOp::Mismatch(l) => (tpos + *l, qpos + *l),
+            CigarOp::Deletion(l) => (tpos + *l, qpos),
             CigarOp::Insertion(l) => {
                 let prev_op_win = (tpos - 1) / WINDOW_SIZE;
                 if first_window <= prev_op_win && prev_op_win < last_window {
                     state.max_ins[(tpos - 1) as usize] =
                         state.max_ins[(tpos - 1) as usize].max(*l as u16);
                 }
+                qpos += *l;
                 continue;
             }
         };
@@ -155,15 +174,22 @@ fn extract_windows<'a, 'b, I>(
             if cigar_start_idx.is_some() {
                 state.windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
                     overlap,
+                    qstart.unwrap(),
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
                     cigar_idx,
                     offset,
                 ));
 
+                //handle qpos
+                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+                    qstart.replace(qpos + offset);
+                }
+
                 cigar_start_idx.replace(cigar_idx);
                 cigar_start_offset.replace(offset);
             } else {
+                qstart = Some(qpos + offset);
                 cigar_start_idx = Some(cigar_idx);
                 cigar_start_offset = Some(offset)
             }
@@ -172,10 +198,17 @@ fn extract_windows<'a, 'b, I>(
         // Handle the last one
         let offset = new_w * WINDOW_SIZE - tpos;
 
+        let mut qend = if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+            qpos + offset
+        } else {
+            qpos
+        };
+
         let cigar_end_idx;
         let cigar_end_offset;
         if tnew == new_w * WINDOW_SIZE {
-            if let Some(CigarOp::Insertion(_)) = cigar_iter.peek().map(|(_, op)| op.as_ref()) {
+            if let Some(CigarOp::Insertion(l)) = cigar_iter.peek().map(|(_, op)| op.as_ref()) {
+                qend += *l;
                 cigar_end_idx = cigar_idx + 2;
             } else {
                 cigar_end_idx = cigar_idx + 1;
@@ -190,20 +223,24 @@ fn extract_windows<'a, 'b, I>(
         if cigar_start_idx.is_some() {
             state.windows[new_w as usize - 1].push(OverlapWindow::new(
                 overlap,
+                qstart.unwrap(),
                 cigar_start_idx.unwrap(),
                 cigar_start_offset.unwrap(),
                 cigar_end_idx,
                 cigar_end_offset,
             ));
 
+            qstart.replace(qend);
             cigar_start_idx.replace(cigar_end_idx);
             cigar_start_offset.replace(cigar_end_offset);
         } else {
+            qstart = Some(qend);
             cigar_start_idx = Some(cigar_end_idx);
             cigar_start_offset = Some(cigar_end_offset);
         }
 
         tpos = tnew;
+        qpos = qnew;
     }
 }
 
@@ -218,14 +255,6 @@ fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid:
     let mut state = WindowingState::new(read.seq.len());
 
     for overlap in overlaps {
-        // Read is the target -> tstart
-        // Read is the query  -> qstart
-        let (tstart, tend) = if overlap.tid == tid {
-            (overlap.tstart, overlap.tend)
-        } else {
-            (overlap.qstart, overlap.qend)
-        };
-
         let mut cigar_iter = get_cigar_iterator(
             overlap.cigar.as_ref().unwrap(),
             overlap.tid == tid,
@@ -235,7 +264,7 @@ fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid:
         .peekable();
 
         // Move to first full window
-        extract_windows(&mut state, &overlap, &mut cigar_iter, tstart, tend);
+        extract_windows(&mut state, &overlap, &mut cigar_iter, overlap.tid == tid);
 
         todo!("Work on extracting features from windows")
     }
