@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::iter::Peekable;
 
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
@@ -52,7 +52,7 @@ impl<'a> WindowingState<'a> {
     }
 }
 
-fn calculate_accuracy(cigar: &VecDeque<CigarOp>) -> f32 {
+fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {
@@ -85,7 +85,7 @@ fn get_reads_to_overlaps(overlaps: &[Overlap]) -> HashMap<u32, Vec<&Overlap>> {
 }
 
 fn get_cigar_iterator(
-    cigar: &VecDeque<CigarOp>,
+    cigar: &[CigarOp],
     is_target: bool,
     strand: Strand,
 ) -> Box<dyn DoubleEndedIterator<Item = Cow<CigarOp>> + '_> {
@@ -104,82 +104,56 @@ fn get_cigar_iterator(
     Box::new(iter)
 }
 
-fn find_first_full_window<'a, 'b, I>(
+fn extract_windows<'a, 'b, I>(
     state: &mut WindowingState<'a>,
     overlap: &'a Overlap,
     cigar_iter: &mut Peekable<I>,
-    mut tpos: u32,
-) -> (u32, usize, u32)
-where
+    tstart: u32,
+    tend: u32,
+) where
     I: Iterator<Item = (usize, Cow<'b, CigarOp>)>,
 {
-    if tpos % WINDOW_SIZE != 0 {
-        let w = tpos / WINDOW_SIZE;
+    let first_window = (tstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
+    let last_window = tend / WINDOW_SIZE; // semi-closed interval
+    let mut tpos = tstart;
 
-        let mut cigar_start_idx = None;
-        let mut cigar_start_offset = None;
-        loop {
-            let (cigar_idx, op) = cigar_iter.next().unwrap();
-            let tnew = match op.as_ref() {
-                CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => tpos + *l,
-                CigarOp::Insertion(_) => continue,
-            };
+    let mut cigar_start_idx = None;
+    let mut cigar_start_offset = None;
+    if tpos % WINDOW_SIZE == 0 {
+        cigar_start_idx = Some(0);
+        cigar_start_offset = Some(0);
+    }
 
-            let new_w = tnew / WINDOW_SIZE;
-            let diff_w = new_w - w; // Can span more than one window
-
-            if diff_w == 0 {
-                // Still in the same window - continue with looping
-                tpos = tnew;
+    while let Some((cigar_idx, op)) = cigar_iter.next() {
+        let tnew = match op.as_ref() {
+            CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => tpos + *l,
+            CigarOp::Insertion(l) => {
+                let prev_op_win = (tpos - 1) / WINDOW_SIZE;
+                if first_window <= prev_op_win && prev_op_win < last_window {
+                    state.max_ins[(tpos - 1) as usize] =
+                        state.max_ins[(tpos - 1) as usize].max(*l as u16);
+                }
                 continue;
             }
+        };
 
-            // Handle first diff_w - 1 windows
-            for i in 1..diff_w {
-                let offset = (w + i) * WINDOW_SIZE - tpos;
+        let current_w = tpos / WINDOW_SIZE;
+        let new_w = tnew / WINDOW_SIZE;
+        let diff_w = new_w - current_w; // Can span more than one window
 
-                // If there was full window -> emit it, else label start
-                if cigar_start_idx.is_some() {
-                    state.windows[(w + i) as usize - 1].push(OverlapWindow::new(
-                        overlap,
-                        cigar_start_idx.unwrap(),
-                        cigar_start_offset.unwrap(),
-                        cigar_idx,
-                        offset,
-                    ));
+        if diff_w == 0 {
+            // Still in the same window - continue with looping
+            tpos = tnew;
+            continue;
+        }
 
-                    cigar_start_offset.replace(offset);
-                } else {
-                    cigar_start_idx = Some(cigar_idx);
-                    cigar_start_offset = Some(offset)
-                }
+        // Handle first diff_w - 1 windows
+        for i in 1..diff_w {
+            let offset = (current_w + i) * WINDOW_SIZE - tpos;
 
-                tpos += offset; // Move to the beginning of the next window
-            }
-
-            // Handle the last one
-            let offset = new_w * WINDOW_SIZE - tpos;
-
-            let cigar_end_idx;
-            let cigar_end_offset;
-            if offset == tnew - tpos {
-                cigar_end_offset = 0; // Beginning of the new op
-
-                let (_, op) = cigar_iter.peek().unwrap(); // TODO check if this is possible
-                if let CigarOp::Insertion(_) = op.as_ref() {
-                    let _ = cigar_iter.next();
-
-                    cigar_end_idx = cigar_idx + 2;
-                } else {
-                    cigar_end_idx = cigar_idx + 1;
-                }
-            } else {
-                cigar_end_idx = cigar_idx;
-                cigar_end_offset = offset;
-            }
-
+            // If there was full window -> emit it, else label start
             if cigar_start_idx.is_some() {
-                state.windows[new_w as usize - 1].push(OverlapWindow::new(
+                state.windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
                     overlap,
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
@@ -187,18 +161,50 @@ where
                     offset,
                 ));
 
+                cigar_start_idx.replace(cigar_idx);
                 cigar_start_offset.replace(offset);
             } else {
-                cigar_start_idx = Some(cigar_end_idx);
-                cigar_start_offset = Some(cigar_end_offset);
+                cigar_start_idx = Some(cigar_idx);
+                cigar_start_offset = Some(offset)
+            }
+        }
+
+        // Handle the last one
+        let offset = new_w * WINDOW_SIZE - tpos;
+
+        let cigar_end_idx;
+        let cigar_end_offset;
+        if tnew == new_w * WINDOW_SIZE {
+            if let Some(CigarOp::Insertion(_)) = cigar_iter.peek().map(|(_, op)| op.as_ref()) {
+                cigar_end_idx = cigar_idx + 2;
+            } else {
+                cigar_end_idx = cigar_idx + 1;
             }
 
-            tpos += offset;
-            return (tpos, cigar_start_idx.unwrap(), cigar_start_offset.unwrap());
+            cigar_end_offset = 0; // Beginning of the new op
+        } else {
+            cigar_end_idx = cigar_idx;
+            cigar_end_offset = offset;
         }
-    }
 
-    (tpos, 0, 0)
+        if cigar_start_idx.is_some() {
+            state.windows[new_w as usize - 1].push(OverlapWindow::new(
+                overlap,
+                cigar_start_idx.unwrap(),
+                cigar_start_offset.unwrap(),
+                cigar_end_idx,
+                cigar_end_offset,
+            ));
+
+            cigar_start_idx.replace(cigar_end_idx);
+            cigar_start_offset.replace(cigar_end_offset);
+        } else {
+            cigar_start_idx = Some(cigar_end_idx);
+            cigar_start_offset = Some(cigar_end_offset);
+        }
+
+        tpos = tnew;
+    }
 }
 
 fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid: u32) {
@@ -214,10 +220,10 @@ fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid:
     for overlap in overlaps {
         // Read is the target -> tstart
         // Read is the query  -> qstart
-        let tpos = if overlap.tid == tid {
-            overlap.tstart
+        let (tstart, tend) = if overlap.tid == tid {
+            (overlap.tstart, overlap.tend)
         } else {
-            overlap.qstart
+            (overlap.qstart, overlap.qend)
         };
 
         let mut cigar_iter = get_cigar_iterator(
@@ -229,21 +235,9 @@ fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid:
         .peekable();
 
         // Move to first full window
-        let (tpos, cigar_start_idx, cigar_start_offset) =
-            find_first_full_window(&mut state, &overlap, &mut cigar_iter, tpos);
+        extract_windows(&mut state, &overlap, &mut cigar_iter, tstart, tend);
 
-        todo!("Still need to work on windowing")
-        /*while let Some((cigar_idx, cigar_op)) = cigar_iter.next() {
-        let tnew = match cigar_op.as_ref() {
-            CigarOp::MATCH(l) | CigarOp::MISMATCH(l) | CigarOp::DELETION(l) => tpos + *l,
-            CigarOp::INSERTION(l) => {
-                state.max_ins[tpos as usize - 1] =
-                    state.max_ins[tpos as usize - 1].max(*l as u16);
-                tpos
-            }
-        };*/
-
-        // TODO -> HANDLE NEW WINDOWS
+        todo!("Work on extracting features from windows")
     }
 }
 

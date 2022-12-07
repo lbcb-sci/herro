@@ -37,7 +37,7 @@ pub struct Overlap {
     pub tlen: u32,
     pub tstart: u32,
     pub tend: u32,
-    pub cigar: Option<VecDeque<CigarOp>>,
+    pub cigar: Option<Vec<CigarOp>>,
 }
 
 impl Overlap {

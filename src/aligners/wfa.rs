@@ -1,5 +1,3 @@
-use std::{collections::VecDeque, ptr::NonNull};
-
 use itertools::Itertools;
 
 use super::CigarOp;
@@ -162,7 +160,7 @@ pub struct WFAAligner {
 }
 
 impl WFAAligner {
-    pub fn align(&self, query: &str, target: &str) -> Option<VecDeque<CigarOp>> {
+    pub fn align(&self, query: &str, target: &str) -> Option<Vec<CigarOp>> {
         unsafe {
             let q_seq: &[i8] = std::mem::transmute(query.as_bytes());
             let t_seq: &[i8] = std::mem::transmute(target.as_bytes());
@@ -205,7 +203,7 @@ impl Drop for WFAAligner {
 /// of aligner
 unsafe impl Send for WFAAligner {}
 
-fn cigar_merge_ops(cigar: &str) -> VecDeque<CigarOp> {
+fn cigar_merge_ops(cigar: &str) -> Vec<CigarOp> {
     cigar
         .chars()
         .map(|c| (1u32, c))
