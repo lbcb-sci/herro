@@ -160,6 +160,18 @@ pub struct WFAAligner {
 }
 
 impl WFAAligner {
+    pub fn default() -> Self {
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: 0,
+            mismatch: 6,
+            gap_opening: 4,
+            gap_extension: 2,
+        });
+
+        builder.build()
+    }
+
     pub fn align(&self, query: &str, target: &str) -> Option<Vec<CigarOp>> {
         unsafe {
             let q_seq: &[i8] = std::mem::transmute(query.as_bytes());
