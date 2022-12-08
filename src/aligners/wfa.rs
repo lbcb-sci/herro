@@ -168,6 +168,7 @@ impl WFAAligner {
             gap_opening: 4,
             gap_extension: 2,
         });
+        builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
 
         builder.build()
     }

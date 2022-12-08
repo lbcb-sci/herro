@@ -74,7 +74,7 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
             let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];
 
-            o.cigar = Some(aligner.align(&query, target).unwrap());
+            o.cigar = aligner.align(&query, target).unwrap();
             o.accuracy = Some(calculate_accuracy(o.cigar.as_ref().unwrap()));
         });
 }
