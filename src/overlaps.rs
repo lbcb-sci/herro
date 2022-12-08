@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 use std::fmt;
 use std::{
     collections::{HashMap, HashSet},
@@ -38,6 +37,7 @@ pub struct Overlap {
     pub tstart: u32,
     pub tend: u32,
     pub cigar: Option<Vec<CigarOp>>,
+    pub accuracy: Option<f32>,
 }
 
 impl Overlap {
@@ -63,6 +63,7 @@ impl Overlap {
             tstart,
             tend,
             cigar: None,
+            accuracy: None,
         }
     }
 

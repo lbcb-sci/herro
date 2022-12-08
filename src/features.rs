@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::iter::Peekable;
 
+use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::aligners::CigarOp;
@@ -53,21 +54,6 @@ impl<'a> WindowingState<'a> {
 
         WindowingState { windows, max_ins }
     }
-}
-
-fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
-    let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
-    for op in cigar {
-        match op {
-            CigarOp::Match(l) => matches += l,
-            CigarOp::Mismatch(l) => subs += l,
-            CigarOp::Insertion(l) => ins += l,
-            CigarOp::Deletion(l) => dels += l,
-        };
-    }
-
-    let length = (matches + subs + ins + dels) as f32;
-    matches as f32 / length
 }
 
 fn get_reads_to_overlaps(overlaps: &[Overlap]) -> HashMap<u32, Vec<&Overlap>> {
@@ -244,13 +230,61 @@ fn extract_windows<'a, 'b, I>(
     }
 }
 
-fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid: u32) {
-    // Get alignment accuracy for every overlap
-    let accuracies: Vec<f32> = overlaps
-        .iter()
-        .map(|o| calculate_accuracy(o.cigar.as_ref().unwrap()))
-        .collect();
+fn get_features_for_window(
+    tstart: usize,
+    overlaps: &mut [OverlapWindow],
+    max_ins: &[u16],
+    tid: u32,
+    //reads: &[HAECRecord],
+) {
+    overlaps.sort_by_key(|ow| OrderedFloat(-ow.overlap.accuracy.unwrap()));
 
+    let mut max = 0;
+    for ow in overlaps.iter().take(30) {
+        let mut cigar = get_cigar_iterator(
+            ow.overlap.cigar.as_ref().unwrap(),
+            ow.overlap.tid == tid,
+            ow.overlap.strand,
+        );
+
+        for _ in 0..ow.cigar_start_idx {
+            cigar.next();
+        }
+
+        let m = cigar
+            .take(ow.cigar_end_idx - ow.cigar_start_idx)
+            .filter_map(|c| match c.as_ref() {
+                CigarOp::Insertion(l) => Some(*l),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+
+        max = max.max(m);
+    }
+
+    println!(
+        "Feat length for window: {}",
+        max_ins[tstart..tstart + WINDOW_SIZE as usize]
+            .iter()
+            .map(|v| *v as u32)
+            .sum::<u32>()
+            + WINDOW_SIZE
+    );
+
+    println!(
+        "n_overlaps for this window: {}, max ins: {}",
+        overlaps.len(),
+        max
+    );
+}
+
+fn generate_features_for_read(
+    read: &HAECRecord,
+    tid: u32,
+    overlaps: &[&Overlap],
+    reads: &[HAECRecord],
+) {
     // Get overlaps for windows
     let mut state = WindowingState::new(read.seq.len());
 
@@ -266,14 +300,26 @@ fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid:
         // Move to first full window
         extract_windows(&mut state, &overlap, &mut cigar_iter, overlap.tid == tid);
 
-        todo!("Work on extracting features from windows")
+        //state.windows.iter().for_each(|w|get)
+
+        //todo!("Work on extracting features from windows")
+    }
+
+    for i in (0..read.seq.len()).step_by(WINDOW_SIZE as usize) {
+        get_features_for_window(
+            i,
+            &mut state.windows[i / WINDOW_SIZE as usize],
+            &state.max_ins,
+            //&reads,
+            tid,
+        );
     }
 }
 
 pub fn extract_features(reads: &[HAECRecord], overlaps: &[Overlap]) {
     let mut read_to_overlaps = get_reads_to_overlaps(overlaps);
 
-    read_to_overlaps
-        .par_iter_mut()
-        .map(|(rid, ovlps)| generate_features_for_read(&reads[*rid as usize], ovlps, *rid));
+    read_to_overlaps.par_iter_mut().for_each(|(rid, ovlps)| {
+        generate_features_for_read(&reads[*rid as usize], *rid, ovlps, reads)
+    });
 }

@@ -75,5 +75,21 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
             let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];
 
             o.cigar = Some(aligner.align(&query, target).unwrap());
+            o.accuracy = Some(calculate_accuracy(o.cigar.as_ref().unwrap()));
         });
+}
+
+fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
+    let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
+    for op in cigar {
+        match op {
+            CigarOp::Match(l) => matches += l,
+            CigarOp::Mismatch(l) => subs += l,
+            CigarOp::Insertion(l) => ins += l,
+            CigarOp::Deletion(l) => dels += l,
+        };
+    }
+
+    let length = (matches + subs + ins + dels) as f32;
+    matches as f32 / length
 }
