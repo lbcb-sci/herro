@@ -23,7 +23,7 @@ impl WFAAlignerBuilder {
         }
     }
 
-    pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) {
+    pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) -> &mut Self {
         match metric {
             WFADistanceMetric::Indel => {
                 self.attributes.distance_metric = wfa::distance_metric_t_indel;
@@ -70,13 +70,15 @@ impl WFAAlignerBuilder {
                 self.attributes.affine2p_penalties.gap_extension2 = gap_extension2;
             }
         }
+        self
     }
 
-    pub fn set_alignment_scope(&mut self, scope: WFAAlignmentScope) {
+    pub fn set_alignment_scope(&mut self, scope: WFAAlignmentScope) -> &mut Self {
         self.attributes.alignment_scope = scope as u32;
+        self
     }
 
-    pub fn set_alignment_span(&mut self, span: WFAAlignmentSpan) {
+    pub fn set_alignment_span(&mut self, span: WFAAlignmentSpan) -> &mut Self {
         match span {
             WFAAlignmentSpan::EndToEnd => {
                 self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
@@ -94,10 +96,12 @@ impl WFAAlignerBuilder {
                 self.attributes.alignment_form.text_end_free = text_end_free;
             }
         }
+        self
     }
 
-    pub fn set_memory_mode(&mut self, mode: WFAMemoryMode) {
+    pub fn set_memory_mode(&mut self, mode: WFAMemoryMode) -> &Self {
         self.attributes.memory_mode = mode as u32;
+        self
     }
 
     pub fn build(&mut self) -> WFAAligner {
@@ -230,14 +234,14 @@ mod tests {
         let query = "AACGTTAGAT";
         let target = "TTAGAT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapAffine {
-            match_: 0,
-            mismatch: 6,
-            gap_opening: 4,
-            gap_extension: 2,
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapAffine {
+                match_: 0,
+                mismatch: 6,
+                gap_opening: 4,
+                gap_extension: 2,
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(cigar, [CigarOp::Insertion(4), CigarOp::Match(6)]);
@@ -248,9 +252,9 @@ mod tests {
         let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::Indel);
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::Indel)
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -280,9 +284,9 @@ mod tests {
         let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::Edit);
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::Edit)
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -310,13 +314,13 @@ mod tests {
         let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapLinear {
-            match_: 0,
-            mismatch: 6,
-            indel: 2,
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapLinear {
+                match_: 0,
+                mismatch: 6,
+                indel: 2,
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -346,14 +350,14 @@ mod tests {
         let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapAffine {
-            match_: (0),
-            mismatch: (6),
-            gap_opening: (4),
-            gap_extension: (2),
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapAffine {
+                match_: (0),
+                mismatch: (6),
+                gap_opening: (4),
+                gap_extension: (2),
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -379,16 +383,16 @@ mod tests {
         let query = "AACTAAGTGTCGGTGGCTACTATATATCAGGTCCT";
         let target = "AGCTAGTGTCAATGGCTACTTTTCAGGTCCT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapAffine2p {
-            match_: (0),
-            mismatch: (6),
-            gap_opening1: (4),
-            gap_extension1: (2),
-            gap_opening2: (12),
-            gap_extension2: (1),
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapAffine2p {
+                match_: (0),
+                mismatch: (6),
+                gap_opening1: (4),
+                gap_extension1: (2),
+                gap_opening2: (12),
+                gap_extension2: (1),
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -414,15 +418,15 @@ mod tests {
         let query = "AATTTAAGTCTAGGCTACTTTCGGTACTTTCTT";
         let target = "AATTAATTTAAGTCTAGGCTACTTTCGGTACTTTGTTCTT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::Indel);
-        builder.set_alignment_span(WFAAlignmentSpan::EndsFree {
-            pattern_begin_free: (10),
-            pattern_end_free: (10),
-            text_begin_free: (10),
-            text_end_free: (10),
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::Indel)
+            .set_alignment_span(WFAAlignmentSpan::EndsFree {
+                pattern_begin_free: (10),
+                pattern_end_free: (10),
+                text_begin_free: (10),
+                text_end_free: (10),
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -443,14 +447,14 @@ mod tests {
         let query = "AACGTTAGAT";
         let target = "TTAGTTGAT";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapAffine {
-            match_: 0,
-            mismatch: 6,
-            gap_opening: 4,
-            gap_extension: 2,
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapAffine {
+                match_: 0,
+                mismatch: 6,
+                gap_opening: 4,
+                gap_extension: 2,
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
@@ -469,14 +473,14 @@ mod tests {
         let query = "AATTAGATTCACACCCTTTTTTTTT";
         let target = "GGGGATCCCGGGG";
 
-        let mut builder = WFAAlignerBuilder::new();
-        builder.set_distance_metric(WFADistanceMetric::GapAffine {
-            match_: 0,
-            mismatch: 6,
-            gap_opening: 4,
-            gap_extension: 2,
-        });
-        let aligner = builder.build();
+        let aligner = WFAAlignerBuilder::new()
+            .set_distance_metric(WFADistanceMetric::GapAffine {
+                match_: 0,
+                mismatch: 6,
+                gap_opening: 4,
+                gap_extension: 2,
+            })
+            .build();
         let cigar = aligner.align(query, target).unwrap();
 
         assert_eq!(
