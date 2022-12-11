@@ -11,7 +11,7 @@ use crate::{
 
 pub mod wfa;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub enum CigarOp {
     Match(u32),
     Mismatch(u32),

@@ -8,7 +8,7 @@ use std::{
 
 use crate::aligners::CigarOp;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
     Forward,
     Reverse,
@@ -25,7 +25,7 @@ impl fmt::Display for Strand {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -41,7 +41,7 @@ pub struct Overlap {
 }
 
 impl Overlap {
-    fn new(
+    pub fn new(
         qid: u32,
         qlen: u32,
         qstart: u32,
