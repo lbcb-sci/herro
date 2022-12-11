@@ -87,11 +87,10 @@ fn get_cigar_iterator(
         }
     });
 
-    if let Strand::Reverse = strand {
-        return Box::new(iter.rev());
+    match strand {
+        Strand::Reverse if !is_target => Box::new(iter.rev()),
+        _ => Box::new(iter),
     }
-
-    Box::new(iter)
 }
 
 fn extract_windows<'a, 'b, I>(
@@ -236,10 +235,10 @@ fn get_features_for_window(
     max_ins: &[u16],
     tid: u32,
     //reads: &[HAECRecord],
-) {
+) -> Vec<u32> {
     overlaps.sort_by_key(|ow| OrderedFloat(-ow.overlap.accuracy.unwrap()));
 
-    let mut max = 0;
+    let mut all_max = Vec::new();
     for ow in overlaps.iter().take(30) {
         let mut cigar = get_cigar_iterator(
             ow.overlap.cigar.as_ref().unwrap(),
@@ -260,23 +259,10 @@ fn get_features_for_window(
             .max()
             .unwrap_or(0);
 
-        max = max.max(m);
+        all_max.push(m);
     }
 
-    println!(
-        "Feat length for window: {}",
-        max_ins[tstart..tstart + WINDOW_SIZE as usize]
-            .iter()
-            .map(|v| *v as u32)
-            .sum::<u32>()
-            + WINDOW_SIZE
-    );
-
-    println!(
-        "n_overlaps for this window: {}, max ins: {}",
-        overlaps.len(),
-        max
-    );
+    all_max
 }
 
 fn generate_features_for_read(
@@ -305,15 +291,22 @@ fn generate_features_for_read(
         //todo!("Work on extracting features from windows")
     }
 
+    let mut data = Vec::new();
     for i in (0..read.seq.len()).step_by(WINDOW_SIZE as usize) {
-        get_features_for_window(
+        let mut m = get_features_for_window(
             i,
             &mut state.windows[i / WINDOW_SIZE as usize],
             &state.max_ins,
             //&reads,
             tid,
         );
+        data.append(&mut m);
     }
+
+    let mean = data.iter().sum::<u32>() as f64 / data.len() as f64;
+    let max = data.iter().max().unwrap();
+
+    println!("Avg: {mean}, Max: {max}");
 }
 
 pub fn extract_features(reads: &[HAECRecord], overlaps: &[Overlap]) {
