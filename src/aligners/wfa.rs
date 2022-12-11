@@ -102,6 +102,7 @@ impl WFAAlignerBuilder {
 
     pub fn build(&mut self) -> WFAAligner {
         unsafe {
+            self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
             let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
             WFAAligner { aligner }
         }
@@ -200,6 +201,7 @@ impl WFAAligner {
 
                 Some(cigar_merge_ops(cigar)) // Alignment successful
             } else {
+                println!("Koji kurac {}, {}", target.len(), query.len());
                 None // Unsuccessful
             }
         }
