@@ -25,7 +25,7 @@ impl fmt::Display for Strand {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -71,6 +71,20 @@ impl Overlap {
         return self.tend - self.tstart;
     }
 }
+
+impl PartialEq for Overlap {
+    fn eq(&self, other: &Self) -> bool {
+        self.qid == other.qid
+            && self.qstart == other.qstart
+            && self.qend == other.qend
+            && self.strand == other.strand
+            && self.tid == other.tid
+            && self.tstart == other.tstart
+            && self.tend == other.tend
+    }
+}
+
+impl Eq for Overlap {}
 
 const EXTEND_LENGTH: u32 = 500;
 const OL_THRESHOLD: u32 = 500;
