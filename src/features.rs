@@ -291,7 +291,10 @@ fn get_features_for_window(
     }
 
     let total = max_ins.into_iter().sum::<u32>() as usize + window_length;
-    println!("Total number of positions {total}");
+    println!(
+        "Total number of positions {total}, number of overlaps {}",
+        overlaps.len()
+    );
 }
 
 fn generate_features_for_read(
