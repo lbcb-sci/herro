@@ -101,11 +101,10 @@ fn get_cigar_iterator(
         }
     });
 
-    if let Strand::Reverse = strand {
-        return Box::new(iter.rev());
+    match strand {
+        Strand::Reverse if !is_target =>  Box::new(iter.rev()),
+        _ =>  Box::new(iter)
     }
-
-    Box::new(iter)
 }
 
 fn extract_windows<'a, 'b, I>(
@@ -120,17 +119,20 @@ fn extract_windows<'a, 'b, I>(
     let last_window;
     let mut tpos;
     let mut qpos = 0;
+    let mut tlen: u32;
 
     // Read is the target -> tstart
     // Read is the query  -> qstart
     if is_target {
         first_window = (overlap.tstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
-        last_window = overlap.tend / WINDOW_SIZE; // semi-closed interval
+        last_window = (overlap.tend - 1) / WINDOW_SIZE; // semi-closed interval
         tpos = overlap.tstart;
+        tlen = overlap.tlen;
     } else {
         first_window = (overlap.qstart + WINDOW_SIZE - 1) / WINDOW_SIZE;
         last_window = overlap.qend / WINDOW_SIZE; // semi-closed interval
         tpos = overlap.qstart;
+        tlen = overlap.qlen;
     }
 
     let mut qstart = None;
@@ -242,6 +244,17 @@ fn extract_windows<'a, 'b, I>(
         tpos = tnew;
         qpos = qnew;
     }
+
+    if tpos == tlen && tlen % WINDOW_SIZE != 0{
+        state.windows[last_window as usize].push(OverlapWindow::new(
+            overlap,
+            qstart.unwrap(),
+            cigar_start_idx.unwrap(),
+            cigar_start_offset.unwrap(),
+            overlap.cigar.as_ref().unwrap().len(),
+            0,
+        ))
+    }
 }
 
 fn generate_features_for_read(read: &HAECRecord, overlaps: &mut [&Overlap], tid: u32) {
@@ -305,17 +318,8 @@ mod tests {
         builder.set_distance_metric(WFADistanceMetric::Edit);
         let aligner = builder.build();
         let cigar = aligner.align(query_seq, target_seq);
-        let mut overlap = Overlap::new(
-            0,
-            q_len,
-            0,
-            q_len - 1,
-            Strand::Forward,
-            1,
-            t_len,
-            0,
-            t_len - 1,
-        );
+        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+
         overlap.cigar = cigar;
         let mut cigar_iter =
             get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
@@ -327,14 +331,15 @@ mod tests {
 
         let mut expected_state = WindowingState::new(target_seq.len());
         expected_state.windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 4, 0));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 11, 5, 0, 6, 3));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 16, 6, 3, 8, 0));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 22, 8, 0, 12, 3));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 29, 12, 3, 12, 8));
+        expected_state.windows[1].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));
+        expected_state.windows[2].push(OverlapWindow::new(&overlap, 11, 5, 0, 6, 3));
+        expected_state.windows[3].push(OverlapWindow::new(&overlap, 16, 6, 3, 8, 0));
+        expected_state.windows[4].push(OverlapWindow::new(&overlap, 22, 8, 0, 12, 3));
+        expected_state.windows[5].push(OverlapWindow::new(&overlap, 29, 12, 3, 12, 8));
+        expected_state.windows[6].push(OverlapWindow::new(&overlap, 34, 12, 8, 13, 0));
 
-        for i in 0..state.windows[0].len() {
-            assert_eq!(state.windows[0][i], expected_state.windows[0][i]);
+        for i in 0..state.windows.len() {
+            assert_eq!(state.windows[i][0], expected_state.windows[i][0]);
         }
     }
 
@@ -354,19 +359,8 @@ mod tests {
         });
         let aligner = builder.build();
         let cigar = aligner.align(query_seq, target_seq);
-        println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(
-            0,
-            q_len,
-            0,
-            q_len - 1,
-            Strand::Forward,
-            1,
-            t_len,
-            0,
-            t_len - 1,
-        );
+        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
         overlap.cigar = cigar;
         let mut cigar_iter =
             get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
@@ -378,13 +372,55 @@ mod tests {
 
         let mut expected_state = WindowingState::new(target_seq.len());
         expected_state.windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 2, 1));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 3, 2, 1, 2, 6));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 8, 2, 6, 2, 11));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 13, 2, 11, 2, 16));
-        expected_state.windows[0].push(OverlapWindow::new(&overlap, 18, 2, 16, 3, 1));
+        expected_state.windows[1].push(OverlapWindow::new(&overlap, 3, 2, 1, 2, 6));
+        expected_state.windows[2].push(OverlapWindow::new(&overlap, 8, 2, 6, 2, 11));
+        expected_state.windows[3].push(OverlapWindow::new(&overlap, 13, 2, 11, 2, 16));
+        expected_state.windows[4].push(OverlapWindow::new(&overlap, 18, 2, 16, 3, 1));
+        expected_state.windows[5].push(OverlapWindow::new(&overlap, 23, 3, 1, 5, 0));
 
-        for i in 0..state.windows[0].len() {
-            assert_eq!(state.windows[0][i], expected_state.windows[0][i]);
+        for i in 0..state.windows.len() {
+            assert_eq!(state.windows[i][0], expected_state.windows[i][0]);
+        }
+    }
+
+    
+    #[test]
+    fn test_extract_windows3() {
+        // long insertion
+        let query_seq = "ATCGTTTTTTTTTTTTTTTTTTTTATCGAAAAAAAAAAAA"; // 40
+        let target_seq = "ATCGATCGAAAAAAAAAAAA"; // 20
+        let q_len = query_seq.len() as u32;
+        let t_len = target_seq.len() as u32;
+
+        let mut builder = WFAAlignerBuilder::new();
+        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+            match_: (0),
+            mismatch: (6),
+            gap_opening: (4),
+            gap_extension: (2),
+        });
+        let aligner = builder.build();
+        let cigar = aligner.align(query_seq, target_seq);
+        println!("{:?}", cigar);
+
+        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+        overlap.cigar = cigar;
+        let mut cigar_iter =
+            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
+                .enumerate()
+                .peekable();
+
+        let mut state = WindowingState::new(target_seq.len());
+        extract_windows(&mut state, &overlap, &mut cigar_iter, true);
+
+        let mut expected_state = WindowingState::new(target_seq.len());
+        expected_state.windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 2, 1));
+        expected_state.windows[1].push(OverlapWindow::new(&overlap, 25, 2, 1, 2, 6));
+        expected_state.windows[2].push(OverlapWindow::new(&overlap, 30, 2, 6, 2, 11));
+        expected_state.windows[3].push(OverlapWindow::new(&overlap, 35, 2, 11, 3, 0));
+
+        for i in 0..state.windows.len() {
+            assert_eq!(state.windows[i][0], expected_state.windows[i][0]);
         }
     }
 }
