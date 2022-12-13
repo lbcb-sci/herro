@@ -248,6 +248,10 @@ fn generate_features_for_read(
     }
 
     for i in (0..read.seq.len()).step_by(window_size as usize) {
+        if windows[i / window_size as usize].len() == 0 {
+            continue;
+        }
+
         let win_len = read.seq.len().min(i + window_size as usize) - i;
         get_features_for_window(&mut windows[i / window_size as usize], tid, reads, win_len);
     }
