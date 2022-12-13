@@ -1,9 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    path::Path,
-};
-
-use aligners::CigarOp;
+use std::{collections::HashMap, path::Path};
 
 use aligners::align_overlaps;
 use features::extract_features;
@@ -13,7 +8,12 @@ mod features;
 mod haec_io;
 mod overlaps;
 
-pub fn error_correction<P: AsRef<Path>>(reads_path: P, paf_path: P, threads: usize) {
+pub fn error_correction<P: AsRef<Path>>(
+    reads_path: P,
+    paf_path: P,
+    threads: usize,
+    window_size: u32,
+) {
     let reads = haec_io::get_reads(reads_path);
     let name_to_id: HashMap<_, _> = reads
         .iter()
@@ -31,5 +31,5 @@ pub fn error_correction<P: AsRef<Path>>(reads_path: P, paf_path: P, threads: usi
         .unwrap();
 
     align_overlaps(&mut overlaps, &reads);
-    extract_features(&reads, &overlaps);
+    extract_features(&reads, &overlaps, window_size);
 }

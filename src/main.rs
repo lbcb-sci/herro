@@ -16,5 +16,5 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
 
-    error_correction(&cli.reads_path, &cli.paf_path, cli.threads)
+    error_correction(&cli.reads_path, &cli.paf_path, cli.threads, cli.window_size);
 }
