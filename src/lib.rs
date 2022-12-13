@@ -7,6 +7,7 @@ mod aligners;
 mod features;
 mod haec_io;
 mod overlaps;
+mod windowing;
 
 pub fn error_correction<P: AsRef<Path>>(
     reads_path: P,
