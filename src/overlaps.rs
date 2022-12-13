@@ -70,6 +70,14 @@ impl Overlap {
     fn target_overlap_length(&self) -> u32 {
         return self.tend - self.tstart;
     }
+
+    pub fn return_other_id(&self, id: u32) -> u32 {
+        if self.qid == id {
+            return self.tid;
+        } else {
+            return self.qid;
+        }
+    }
 }
 
 impl PartialEq for Overlap {
@@ -150,8 +158,8 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
             .insert(oid); */
     }
 
-    println!("Removed overlaps due to ratio {}", ratio_removed);
-    println!("Total overlaps {}", overlaps.len());
+    eprintln!("Removed overlaps due to ratio {}", ratio_removed);
+    eprintln!("Total overlaps {}", overlaps.len());
     overlaps
 }
 

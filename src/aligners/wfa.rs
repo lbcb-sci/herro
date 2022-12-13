@@ -205,7 +205,6 @@ impl WFAAligner {
 
                 Some(cigar_merge_ops(cigar)) // Alignment successful
             } else {
-                println!("Koji kurac {}, {}", target.len(), query.len());
                 None // Unsuccessful
             }
         }
