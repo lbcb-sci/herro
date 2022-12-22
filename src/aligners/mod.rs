@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc};
+use std::{borrow::Cow, fmt::Display, sync::Arc};
 
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
@@ -41,8 +41,32 @@ impl From<(u32, char)> for CigarOp {
     }
 }
 
+impl ToString for CigarOp {
+    fn to_string(&self) -> String {
+        match self {
+            CigarOp::Match(l) => format!("{}{}", l, '='),
+            CigarOp::Mismatch(l) => format!("{}{}", l, 'X'),
+            CigarOp::Deletion(l) => format!("{}{}", l, 'D'),
+            CigarOp::Insertion(l) => format!("{}{}", l, 'I'),
+        }
+    }
+}
+
+pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
+    cigar.iter().map(|op| op.to_string()).collect()
+}
+
 #[inline]
-fn complement(base: char) -> char {
+fn complement(base: u8) -> u8 {
+    match base {
+        b'A' => b'T', // A -> T
+        b'C' => b'G', // C -> G
+        b'G' => b'C', // G -> C
+        b'T' => b'A', // T -> A
+        _ => panic!("Invalid base."),
+    }
+}
+/*fn complement(base: char) -> char {
     match base {
         'A' => 'T',
         'C' => 'G',
@@ -50,10 +74,10 @@ fn complement(base: char) -> char {
         'T' => 'A',
         _ => panic!("Unknown base"),
     }
-}
+}*/
 
-pub fn reverse_complement(seq: &str) -> String {
-    seq.chars().rev().map(|c| complement(c)).collect()
+pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
+    seq.iter().rev().map(|c| complement(*c)).collect()
 }
 
 pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
@@ -62,6 +86,8 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
     overlaps
         .par_iter_mut()
+        //.take(500_000) //TODO remove take
+        //.with_min_len(10)
         .progress_count(n_overlaps as u64)
         .for_each_with(aligners, |aligners, o| {
             let aligner = aligners.get_or(|| wfa::WFAAligner::default());
@@ -74,7 +100,23 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
             let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];
 
-            o.cigar = aligner.align(&query, target);
+            let align_result = aligner.align(&query, target).unwrap();
+            o.cigar = Some(align_result.cigar);
+
+            o.tstart += align_result.tstart;
+            o.tend -= align_result.tend;
+
+            match o.strand {
+                overlaps::Strand::Forward => {
+                    o.qstart += align_result.qstart;
+                    o.qend -= align_result.qend;
+                }
+                overlaps::Strand::Reverse => {
+                    o.qstart += align_result.qend;
+                    o.qend -= align_result.qstart;
+                }
+            }
+
             o.accuracy = Some(calculate_accuracy(o.cigar.as_ref().unwrap()));
         });
 }
@@ -92,4 +134,24 @@ fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
 
     let length = (matches + subs + ins + dels) as f32;
     matches as f32 / length
+}
+
+pub struct AlignmentResult {
+    cigar: Vec<CigarOp>,
+    tstart: u32,
+    tend: u32,
+    qstart: u32,
+    qend: u32,
+}
+
+impl AlignmentResult {
+    fn new(cigar: Vec<CigarOp>, tstart: u32, tend: u32, qstart: u32, qend: u32) -> Self {
+        AlignmentResult {
+            cigar,
+            tstart,
+            tend,
+            qstart,
+            qend,
+        }
+    }
 }

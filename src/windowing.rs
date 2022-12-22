@@ -43,7 +43,8 @@ pub(crate) fn extract_windows<'a, 'b, I>(
 ) where
     I: Iterator<Item = (usize, Cow<'b, CigarOp>)>,
 {
-    let last_window;
+    let first_window;
+    let last_window; // Should be exclusive
     let mut tpos;
     let mut qpos = 0;
     let tlen;
@@ -51,13 +52,29 @@ pub(crate) fn extract_windows<'a, 'b, I>(
     // Read is the target -> tstart
     // Read is the query  -> qstart
     if is_target {
-        last_window = (overlap.tend - 1) / window_size; // semi-closed interval
+        first_window = (overlap.tstart + window_size - 1) / window_size;
+        last_window = if overlap.tend == overlap.tlen {
+            (overlap.tend - 1) / window_size + 1
+        } else {
+            overlap.tend / window_size
+        };
+
         tpos = overlap.tstart;
         tlen = overlap.tlen;
     } else {
-        last_window = overlap.qend / window_size; // semi-closed interval
+        first_window = (overlap.qstart + window_size - 1) / window_size;
+        last_window = if overlap.qend == overlap.qlen {
+            (overlap.qend - 1) / window_size + 1
+        } else {
+            overlap.qend / window_size
+        };
+
         tpos = overlap.qstart;
         tlen = overlap.qlen;
+    }
+
+    if last_window - first_window == 0 {
+        return;
     }
 
     let mut qstart = None;
@@ -165,8 +182,9 @@ pub(crate) fn extract_windows<'a, 'b, I>(
         qpos = qnew;
     }
 
+    // End of the target, emitted already for tlen % W = 0
     if tpos == tlen && tlen % window_size != 0 {
-        windows[last_window as usize].push(OverlapWindow::new(
+        windows[last_window as usize - 1].push(OverlapWindow::new(
             overlap,
             qstart.unwrap(),
             cigar_start_idx.unwrap(),
@@ -471,7 +489,7 @@ mod tests {
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
         extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
-        
+
         let mut expected_state = vec![Vec::new(); n_windows];
         expected_state[1].push(OverlapWindow::new(&overlap, 0, 0, 0, 4, 0));
         expected_state[2].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));

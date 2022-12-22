@@ -1,6 +1,6 @@
 use itertools::Itertools;
 
-use super::CigarOp;
+use super::{AlignmentResult, CigarOp};
 
 #[allow(non_upper_case_globals)]
 #[allow(non_snake_case)]
@@ -104,7 +104,7 @@ impl WFAAlignerBuilder {
         self
     }
 
-    pub fn build(&mut self) -> WFAAligner {
+    pub fn build(mut self) -> WFAAligner {
         unsafe {
             self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
             let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
@@ -167,21 +167,25 @@ pub struct WFAAligner {
 impl WFAAligner {
     pub fn default() -> Self {
         let mut builder = WFAAlignerBuilder::new();
+
+        // Similar to minimap2 defaults
         builder.set_distance_metric(WFADistanceMetric::GapAffine {
             match_: 0,
             mismatch: 6,
             gap_opening: 4,
             gap_extension: 2,
         });
+
+        //BiWFA
         builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
 
         builder.build()
     }
 
-    pub fn align(&self, query: &str, target: &str) -> Option<Vec<CigarOp>> {
+    pub fn align(&self, query: &[u8], target: &[u8]) -> Option<AlignmentResult> {
         unsafe {
-            let q_seq: &[i8] = std::mem::transmute(query.as_bytes());
-            let t_seq: &[i8] = std::mem::transmute(target.as_bytes());
+            let q_seq: &[i8] = std::mem::transmute(query);
+            let t_seq: &[i8] = std::mem::transmute(target);
 
             let status = wfa::wavefront_align(
                 self.aligner,
@@ -198,12 +202,55 @@ impl WFAAligner {
                 let size =
                     (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
 
-                let cigar = std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                    cigar_start as *mut u8,
-                    size as usize,
-                ));
+                let cigar = std::slice::from_raw_parts(cigar_start as *mut u8, size as usize);
 
-                Some(cigar_merge_ops(cigar)) // Alignment successful
+                /*let (mut tstart, mut qstart) = (0, 0);
+                let mut i = 0;
+                loop {
+                    match cigar[i] as char {
+                        'M' => break,
+                        'X' => {
+                            tstart += 1;
+                            qstart += 1;
+                        }
+                        'D' => {
+                            tstart += 1;
+                        }
+                        'I' => {
+                            qstart += 1;
+                        }
+                        _ => panic!("Invalid cigar op"),
+                    }
+
+                    i += 1;
+                }
+
+                let (mut tend, mut qend) = (0, 0);
+                let mut j = cigar.len() - 1;
+                loop {
+                    match cigar[j] as char {
+                        'M' => break,
+                        'X' => {
+                            tend += 1;
+                            qend += 1;
+                        }
+                        'D' => {
+                            tend += 1;
+                        }
+                        'I' => {
+                            qend += 1;
+                        }
+                        _ => panic!("Invalid cigar op"),
+                    }
+
+                    j -= 1;
+                }
+                j += 1; // Move to exclusive */
+
+                // Alignment successful
+                let cigar = cigar_merge_ops(&cigar);
+                // Some(AlignmentResult::new(cigar, tstart, tend, qstart, qend))
+                Some(AlignmentResult::new(cigar, 0, 0, 0, 0))
             } else {
                 None // Unsuccessful
             }
@@ -221,10 +268,10 @@ impl Drop for WFAAligner {
 /// of aligner
 unsafe impl Send for WFAAligner {}
 
-fn cigar_merge_ops(cigar: &str) -> Vec<CigarOp> {
+fn cigar_merge_ops(cigar: &[u8]) -> Vec<CigarOp> {
     cigar
-        .chars()
-        .map(|c| (1u32, c))
+        .iter()
+        .map(|c| (1u32, *c as char))
         .coalesce(|(l1, c1), (_, c2)| {
             if c1 == c2 {
                 Ok((l1 + 1, c1))

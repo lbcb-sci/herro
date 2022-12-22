@@ -18,3 +18,4 @@ thread_local = "~1.1.4"
 indicatif = {version = "~0.17.2", features = ["rayon"]}
 ordered-float = "~3.4.0"
 ndarray = "~0.15.6"
+ndarray-npy = "~0.8.1"

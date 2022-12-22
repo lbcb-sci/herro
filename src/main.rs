@@ -11,10 +11,18 @@ struct Cli {
     window_size: u32,
     #[arg(short = 't', default_value = "1")]
     threads: usize,
+    #[arg(short = 'o', default_value = "features")]
+    output: String,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    error_correction(&cli.reads_path, &cli.paf_path, cli.threads, cli.window_size);
+    error_correction(
+        &cli.reads_path,
+        &cli.paf_path,
+        &cli.output,
+        cli.threads,
+        cli.window_size,
+    );
 }

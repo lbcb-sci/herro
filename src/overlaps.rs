@@ -1,4 +1,4 @@
-use std::fmt;
+use std::fmt::{self};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -110,7 +110,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let mut data = line.split("\t");
 
-        let qid = *name_to_id.get(data.next().unwrap()).unwrap();
+        let qid = match name_to_id.get(data.next().unwrap()) {
+            Some(qid) => *qid,
+            None => continue,
+        };
         let qlen: u32 = data.next().unwrap().parse().unwrap();
         let qstart: u32 = data.next().unwrap().parse().unwrap();
         let qend: u32 = data.next().unwrap().parse().unwrap();
@@ -121,7 +124,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
             _ => panic!("Invalid strand character."),
         };
 
-        let tid = *name_to_id.get(data.next().unwrap()).unwrap();
+        let tid = match name_to_id.get(data.next().unwrap()) {
+            Some(tid) => *tid,
+            None => continue,
+        };
         let tlen: u32 = data.next().unwrap().parse().unwrap();
         let tstart: u32 = data.next().unwrap().parse().unwrap();
         let tend: u32 = data.next().unwrap().parse().unwrap();
