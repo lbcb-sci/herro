@@ -5,6 +5,7 @@ use crate::{aligners::CigarOp, overlaps::Overlap};
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct OverlapWindow<'a> {
     pub overlap: &'a Overlap,
+    pub tstart: u32,
     pub qstart: u32,
     pub cigar_start_idx: usize,
     pub cigar_start_offset: u32,
@@ -15,6 +16,7 @@ pub struct OverlapWindow<'a> {
 impl<'a> OverlapWindow<'a> {
     pub fn new(
         overlap: &'a Overlap,
+        tstart: u32,
         qstart: u32,
         cigar_start_idx: usize,
         cigar_start_offset: u32,
@@ -23,6 +25,7 @@ impl<'a> OverlapWindow<'a> {
     ) -> Self {
         OverlapWindow {
             overlap,
+            tstart,
             qstart,
             cigar_start_idx,
             cigar_start_offset,
@@ -43,49 +46,77 @@ pub(crate) fn extract_windows<'a, 'b, I>(
 ) where
     I: Iterator<Item = (usize, Cow<'b, CigarOp>)>,
 {
+    if is_target && (overlap.tend - overlap.tstart) < window_size {
+        return;
+    } else if (overlap.qend - overlap.qstart) < window_size {
+        return;
+    }
+
     let first_window;
     let last_window; // Should be exclusive
+    let tstart;
     let mut tpos;
     let mut qpos = 0;
-    let tlen;
+
+    let zeroth_window_thresh = (0.1 * window_size as f32) as u32;
+    let nth_window_thresh = if is_target {
+        overlap.tlen - zeroth_window_thresh
+    } else {
+        overlap.qlen - zeroth_window_thresh
+    };
 
     // Read is the target -> tstart
     // Read is the query  -> qstart
     if is_target {
-        first_window = (overlap.tstart + window_size - 1) / window_size;
-        last_window = if overlap.tend == overlap.tlen {
+        first_window = if overlap.tstart < zeroth_window_thresh {
+            0
+        } else {
+            (overlap.tstart + window_size - 1) / window_size
+        };
+
+        last_window = if overlap.tend > nth_window_thresh {
             (overlap.tend - 1) / window_size + 1
         } else {
             overlap.tend / window_size
         };
 
+        tstart = overlap.tstart;
         tpos = overlap.tstart;
-        tlen = overlap.tlen;
     } else {
-        first_window = (overlap.qstart + window_size - 1) / window_size;
-        last_window = if overlap.qend == overlap.qlen {
+        first_window = if overlap.qstart < zeroth_window_thresh {
+            0
+        } else {
+            (overlap.qstart + window_size - 1) / window_size
+        };
+
+        last_window = if overlap.qend > nth_window_thresh {
             (overlap.qend - 1) / window_size + 1
         } else {
             overlap.qend / window_size
         };
 
+        tstart = overlap.qstart;
         tpos = overlap.qstart;
-        tlen = overlap.qlen;
     }
 
-    if last_window - first_window == 0 {
+    if last_window - first_window < 1 {
         return;
     }
 
-    let mut qstart = None;
+    let mut t_window_start = None;
+    let mut q_window_start = None;
     let mut cigar_start_idx = None;
     let mut cigar_start_offset = None;
-    if tpos % window_size == 0 {
-        qstart = Some(0);
+
+    // Start of the window OR beginning of the target
+    if tpos % window_size == 0 || tstart < zeroth_window_thresh {
+        t_window_start = Some(tpos);
+        q_window_start = Some(0);
         cigar_start_idx = Some(0);
         cigar_start_offset = Some(0);
     }
 
+    let mut n_emitted = 0;
     while let Some((cigar_idx, op)) = cigar_iter.next() {
         let (tnew, qnew) = match op.as_ref() {
             CigarOp::Match(l) | CigarOp::Mismatch(l) => (tpos + *l, qpos + *l),
@@ -115,21 +146,35 @@ pub(crate) fn extract_windows<'a, 'b, I>(
             if cigar_start_idx.is_some() {
                 windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
                     overlap,
-                    qstart.unwrap(),
+                    t_window_start.unwrap(),
+                    q_window_start.unwrap(),
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
                     cigar_idx,
                     offset,
                 ));
+                n_emitted += 1;
+
+                t_window_start.replace(tpos + offset);
+
                 //handle qpos
                 if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
-                    qstart.replace(qpos + offset);
+                    q_window_start.replace(qpos + offset);
+                } else {
+                    q_window_start.replace(qpos);
                 }
 
                 cigar_start_idx.replace(cigar_idx);
                 cigar_start_offset.replace(offset);
             } else {
-                qstart = Some(qpos + offset);
+                t_window_start = Some(tpos + offset);
+
+                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+                    q_window_start = Some(qpos + offset);
+                } else {
+                    q_window_start = Some(qpos);
+                }
+
                 cigar_start_idx = Some(cigar_idx);
                 cigar_start_offset = Some(offset)
             }
@@ -163,17 +208,22 @@ pub(crate) fn extract_windows<'a, 'b, I>(
         if cigar_start_idx.is_some() {
             windows[new_w as usize - 1].push(OverlapWindow::new(
                 overlap,
-                qstart.unwrap(),
+                t_window_start.unwrap(),
+                q_window_start.unwrap(),
                 cigar_start_idx.unwrap(),
                 cigar_start_offset.unwrap(),
                 cigar_end_idx,
                 cigar_end_offset,
             ));
-            qstart.replace(qend);
+            n_emitted += 1;
+
+            t_window_start.replace(tpos + offset);
+            q_window_start.replace(qend);
             cigar_start_idx.replace(cigar_end_idx);
             cigar_start_offset.replace(cigar_end_offset);
         } else {
-            qstart = Some(qend);
+            t_window_start = Some(tpos + offset);
+            q_window_start = Some(qend);
             cigar_start_idx = Some(cigar_end_idx);
             cigar_start_offset = Some(cigar_end_offset);
         }
@@ -183,16 +233,64 @@ pub(crate) fn extract_windows<'a, 'b, I>(
     }
 
     // End of the target, emitted already for tlen % W = 0
-    if tpos == tlen && tlen % window_size != 0 {
+    if tpos > nth_window_thresh && tpos % window_size != 0 {
         windows[last_window as usize - 1].push(OverlapWindow::new(
             overlap,
-            qstart.unwrap(),
+            t_window_start.unwrap(),
+            q_window_start.unwrap(),
             cigar_start_idx.unwrap(),
             cigar_start_offset.unwrap(),
             overlap.cigar.as_ref().unwrap().len(),
             0,
-        ))
+        ));
+
+        n_emitted += 1;
     }
+
+    /*assert_eq!(
+        qpos,
+        if is_target {
+            overlap.qend - overlap.qstart
+        } else {
+            overlap.tend - overlap.tstart
+        },
+        "Qpos and query length should be the same."
+    );
+
+    assert_eq!(
+        tpos,
+        if is_target {
+            overlap.tend
+        } else {
+            overlap.qend
+        },
+        "Tpos and end should be the same"
+    );
+    assert_eq!(
+        last_window - first_window,
+        n_emitted,
+        "FW: {}, LW: {}, ST: {}, EN: {}, LEN: {}, TP: {}, NE: {}, IS_T: {}",
+        first_window,
+        last_window,
+        if is_target {
+            overlap.tstart
+        } else {
+            overlap.qstart
+        },
+        if is_target {
+            overlap.tend
+        } else {
+            overlap.qend
+        },
+        if is_target {
+            overlap.tlen
+        } else {
+            overlap.qlen
+        },
+        tpos,
+        n_emitted,
+        is_target
+    );*/
 }
 
 #[cfg(test)]

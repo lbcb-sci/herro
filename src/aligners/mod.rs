@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Display, sync::Arc};
+use std::{borrow::Cow, sync::Arc};
 
 use indicatif::ParallelProgressIterator;
 use rayon::prelude::*;
@@ -66,15 +66,6 @@ fn complement(base: u8) -> u8 {
         _ => panic!("Invalid base."),
     }
 }
-/*fn complement(base: char) -> char {
-    match base {
-        'A' => 'T',
-        'C' => 'G',
-        'G' => 'C',
-        'T' => 'A',
-        _ => panic!("Unknown base"),
-    }
-}*/
 
 pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     seq.iter().rev().map(|c| complement(*c)).collect()
@@ -86,7 +77,6 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
     overlaps
         .par_iter_mut()
-        //.take(500_000) //TODO remove take
         //.with_min_len(10)
         .progress_count(n_overlaps as u64)
         .for_each_with(aligners, |aligners, o| {

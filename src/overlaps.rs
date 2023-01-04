@@ -151,17 +151,6 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         overlaps.push(overlap);
-
-        /*
-        rid_to_oids
-            .entry(tid)
-            .or_insert_with(|| HashSet::new())
-            .insert(oid);
-
-        rid_to_oids
-            .entry(qid)
-            .or_insert_with(|| HashSet::new())
-            .insert(oid); */
     }
 
     eprintln!("Removed overlaps due to ratio {}", ratio_removed);

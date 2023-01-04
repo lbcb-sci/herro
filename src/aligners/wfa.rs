@@ -204,7 +204,7 @@ impl WFAAligner {
 
                 let cigar = std::slice::from_raw_parts(cigar_start as *mut u8, size as usize);
 
-                /*let (mut tstart, mut qstart) = (0, 0);
+                let (mut tstart, mut qstart) = (0, 0);
                 let mut i = 0;
                 loop {
                     match cigar[i] as char {
@@ -245,12 +245,12 @@ impl WFAAligner {
 
                     j -= 1;
                 }
-                j += 1; // Move to exclusive */
+                j += 1; // Move to exclusive
 
                 // Alignment successful
-                let cigar = cigar_merge_ops(&cigar);
-                // Some(AlignmentResult::new(cigar, tstart, tend, qstart, qend))
-                Some(AlignmentResult::new(cigar, 0, 0, 0, 0))
+                let cigar = cigar_merge_ops(&cigar[i..j]);
+                Some(AlignmentResult::new(cigar, tstart, tend, qstart, qend))
+                //Some(AlignmentResult::new(cigar, 0, 0, 0, 0))
             } else {
                 None // Unsuccessful
             }

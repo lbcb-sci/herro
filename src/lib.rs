@@ -32,6 +32,7 @@ pub fn error_correction<T, U, V>(
     eprintln!("Parsed {} reads.", reads.len());
 
     let mut overlaps = overlaps::process_overlaps(overlaps::parse_paf(paf_path, &name_to_id));
+    //overlaps.truncate(500_000);
     eprintln!("Parsed {} overlaps", overlaps.len());
 
     rayon::ThreadPoolBuilder::new()
@@ -40,32 +41,5 @@ pub fn error_correction<T, U, V>(
         .unwrap();
 
     align_overlaps(&mut overlaps, &reads);
-
-    let mut overlap_file = BufWriter::new(
-        File::create("/raid/scratch/stanojevicd/aisg/hg002/chr20/overlap_analysis/p_longer_than_4096/overlaps_cigar_haec.paf")
-            .expect("Uh Oh"),
-    );
-    for overlap in &overlaps {
-        if overlap.cigar.is_none() {
-            continue;
-        }
-
-        writeln!(
-            overlap_file,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            &reads[overlap.qid as usize].id,
-            overlap.qlen,
-            overlap.qstart,
-            overlap.qend,
-            overlap.strand,
-            &reads[overlap.tid as usize].id,
-            overlap.tlen,
-            overlap.tstart,
-            overlap.tend,
-            cigar_to_string(overlap.cigar.as_ref().unwrap())
-        )
-        .unwrap();
-    }
-
-    // extract_features(&reads, &overlaps, window_size, output_path);
+    extract_features(&reads, &overlaps, window_size, output_path);
 }
