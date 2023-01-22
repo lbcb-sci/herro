@@ -29,6 +29,17 @@ pub fn error_correction<T, U, V>(
         .enumerate()
         .map(|(i, e)| (e.id.as_str(), i as u32))
         .collect();
+
+    /*println!(
+        "id for target {}, id for query {}",
+        name_to_id
+            .get("b722bee0-4b68-442a-bb21-f6989afe521f")
+            .unwrap(),
+        name_to_id
+            .get("5be9633b-2e56-44d2-bc92-0cbbd1bdd8e6")
+            .unwrap()
+    );*/
+
     eprintln!("Parsed {} reads.", reads.len());
 
     let mut overlaps = overlaps::process_overlaps(overlaps::parse_paf(paf_path, &name_to_id));

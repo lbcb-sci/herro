@@ -7,7 +7,7 @@ use std::path::Path;
 
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
-use ndarray::{Array, Array3, ArrayViewMut2, Axis};
+use ndarray::{s, Array, Array3, ArrayViewMut2, Axis, Slice};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
@@ -170,10 +170,16 @@ fn get_features_for_ol_window(
     } else {
         b'#'
     };
-    features.fill(gap);
+    features.column_mut(0).fill(gap); // Initialize with gap token
 
-    let mut idx = 0;
-    let mut tpos = offset;
+    let mut tpos = offset; // position in the target read (excluding insertions)
+    let mut idx = offset + max_ins[..offset].iter().map(|v| *v as usize).sum::<usize>(); // position in the features (including insertions)
+
+    if idx > 0 {
+        // No alignment at the start
+        features.slice_mut(s![..idx, 0]).fill(b'.');
+    }
+
     cigar
         .take(cigar_len)
         .enumerate()
@@ -236,6 +242,11 @@ fn get_features_for_ol_window(
                 }
             }
         });
+
+    if idx < features.shape()[0] {
+        // No alignment at the end
+        features.slice_mut(s![idx.., 0]).fill(b'.');
+    }
 }
 
 fn write_target_for_window(
@@ -245,7 +256,7 @@ fn write_target_for_window(
     mut features: ArrayViewMut2<'_, u8>,
     window_length: usize,
 ) {
-    features.fill(b'*'); // Fill like forward
+    features.column_mut(0).fill(b'*'); // Fill like forward
 
     let mut tpos = 0;
     target.seq[tstart..tstart + window_length]
@@ -270,8 +281,9 @@ fn get_features_for_window(
 ) -> Array3<u8> {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
-    let mut features = Array::zeros((31, length, 2));
+    let mut features = Array::zeros((1 + TOP_K, length, 2));
     features.index_axis_mut(Axis(2), 0).fill(b'.'); // Set '.' as marker for empty row
+    features.index_axis_mut(Axis(2), 1).fill(b'!'); // Set default quality to 0
 
     // First write the target
     write_target_for_window(
@@ -341,6 +353,10 @@ pub fn extract_features<P: AsRef<Path>>(
             let output_path = output_path.as_ref().join(&read.id);
             create_dir_all(&output_path).expect("Cannot create directory");
 
+            /*if reads[*rid as usize].id == "b722bee0-4b68-442a-bb21-f6989afe521f" {
+                print_overlaps(ovlps, reads);
+            }*/
+
             for i in 0..n_windows {
                 if windows[i].len() == 0 {
                     continue;
@@ -373,7 +389,7 @@ pub fn extract_features<P: AsRef<Path>>(
                     .collect();
 
                 //TODO handle Result
-                output_features(&output_path, i, qids, window, max_ins);
+                output_features(&output_path, i, &qids, &window);
             }
         });
 }
@@ -381,9 +397,8 @@ pub fn extract_features<P: AsRef<Path>>(
 fn output_features<P: AsRef<Path>>(
     path: P,
     window_id: usize,
-    ids: Vec<&str>,
-    features: Array3<u8>,
-    max_ins: Vec<u16>,
+    ids: &[&str],
+    features: &Array3<u8>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
     let ids_file = File::create(ids_path)?;
@@ -396,9 +411,31 @@ fn output_features<P: AsRef<Path>>(
     let file = File::create(features_path)?;
     features.write_npy(file).unwrap();
 
-    let ins_path = path.as_ref().join(format!("{}.ins.npy", window_id));
-    let file = File::create(ins_path)?;
-    Array::from(max_ins).write_npy(file).unwrap();
+    //let ins_path = path.as_ref().join(format!("{}.ins.npy", window_id));
+    //let file = File::create(ins_path)?;
+    //Array::from(max_ins).write_npy(file).unwrap();
 
     Ok(())
+}
+
+fn print_overlaps(overlaps: &[&Overlap], reads: &[HAECRecord]) {
+    let file = File::create("overlaps.tsv").unwrap();
+    let mut writer = BufWriter::new(file);
+
+    for overlap in overlaps {
+        writeln!(
+            &mut writer,
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            reads[overlap.qid as usize].id,
+            overlap.qlen,
+            overlap.qstart,
+            overlap.qend,
+            overlap.strand,
+            reads[overlap.tid as usize].id,
+            overlap.tlen,
+            overlap.tstart,
+            overlap.tend
+        )
+        .unwrap();
+    }
 }
