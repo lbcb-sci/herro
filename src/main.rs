@@ -7,11 +7,22 @@ use ont_haec_rs::error_correction;
 struct Cli {
     reads_path: String,
     paf_path: String,
+    #[arg(short = 'w', default_value = "4096")]
+    window_size: u32,
+    #[arg(short = 't', default_value = "1")]
     threads: usize,
+    #[arg(short = 'o', default_value = "features")]
+    output: String,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    error_correction(&cli.reads_path, &cli.paf_path, cli.threads)
+    error_correction(
+        &cli.reads_path,
+        &cli.paf_path,
+        &cli.output,
+        cli.threads,
+        cli.window_size,
+    );
 }

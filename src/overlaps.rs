@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-use std::fmt;
+use std::fmt::{self};
 use std::{
     collections::{HashMap, HashSet},
     fs::File,
@@ -26,7 +25,7 @@ impl fmt::Display for Strand {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -38,6 +37,7 @@ pub struct Overlap {
     pub tstart: u32,
     pub tend: u32,
     pub cigar: Option<Vec<CigarOp>>,
+    pub accuracy: Option<f32>,
 }
 
 impl Overlap {
@@ -63,13 +63,36 @@ impl Overlap {
             tstart,
             tend,
             cigar: None,
+            accuracy: None,
         }
     }
 
     fn target_overlap_length(&self) -> u32 {
         return self.tend - self.tstart;
     }
+
+    pub fn return_other_id(&self, id: u32) -> u32 {
+        if self.qid == id {
+            return self.tid;
+        } else {
+            return self.qid;
+        }
+    }
 }
+
+impl PartialEq for Overlap {
+    fn eq(&self, other: &Self) -> bool {
+        self.qid == other.qid
+            && self.qstart == other.qstart
+            && self.qend == other.qend
+            && self.strand == other.strand
+            && self.tid == other.tid
+            && self.tstart == other.tstart
+            && self.tend == other.tend
+    }
+}
+
+impl Eq for Overlap {}
 
 const EXTEND_LENGTH: u32 = 500;
 const OL_THRESHOLD: u32 = 500;
@@ -87,7 +110,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let mut data = line.split("\t");
 
-        let qid = *name_to_id.get(data.next().unwrap()).unwrap();
+        let qid = match name_to_id.get(data.next().unwrap()) {
+            Some(qid) => *qid,
+            None => continue,
+        };
         let qlen: u32 = data.next().unwrap().parse().unwrap();
         let qstart: u32 = data.next().unwrap().parse().unwrap();
         let qend: u32 = data.next().unwrap().parse().unwrap();
@@ -98,7 +124,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
             _ => panic!("Invalid strand character."),
         };
 
-        let tid = *name_to_id.get(data.next().unwrap()).unwrap();
+        let tid = match name_to_id.get(data.next().unwrap()) {
+            Some(tid) => *tid,
+            None => continue,
+        };
         let tlen: u32 = data.next().unwrap().parse().unwrap();
         let tstart: u32 = data.next().unwrap().parse().unwrap();
         let tend: u32 = data.next().unwrap().parse().unwrap();
@@ -122,21 +151,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         overlaps.push(overlap);
-
-        /*
-        rid_to_oids
-            .entry(tid)
-            .or_insert_with(|| HashSet::new())
-            .insert(oid);
-
-        rid_to_oids
-            .entry(qid)
-            .or_insert_with(|| HashSet::new())
-            .insert(oid); */
     }
 
-    println!("Removed overlaps due to ratio {}", ratio_removed);
-    println!("Total overlaps {}", overlaps.len());
+    eprintln!("Removed overlaps due to ratio {}", ratio_removed);
+    eprintln!("Total overlaps {}", overlaps.len());
     overlaps
 }
 
