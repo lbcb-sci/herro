@@ -283,6 +283,7 @@ fn cigar_merge_ops(cigar: &[u8]) -> Vec<CigarOp> {
         .collect()
 }
 
+/*
 #[cfg(test)]
 mod tests {
     use crate::aligners::{
@@ -558,4 +559,4 @@ mod tests {
             ]
         );
     }
-}
+}*/

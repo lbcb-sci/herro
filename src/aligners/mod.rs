@@ -6,7 +6,7 @@ use thread_local::ThreadLocal;
 
 use crate::{
     haec_io::HAECRecord,
-    overlaps::{self, Overlap},
+    overlaps::{self, Overlap, Strand},
 };
 
 pub mod wfa;
@@ -25,6 +25,24 @@ impl CigarOp {
             Self::Insertion(l) => Self::Deletion(*l),
             Self::Deletion(l) => Self::Insertion(*l),
             _ => self.clone(),
+        }
+    }
+
+    pub fn get_length(&self) -> u32 {
+        match self {
+            Self::Match(l) => *l,
+            Self::Mismatch(l) => *l,
+            Self::Insertion(l) => *l,
+            Self::Deletion(l) => *l,
+        }
+    }
+
+    pub fn with_length(&self, length: u32) -> Self {
+        match self {
+            Self::Match(_) => CigarOp::Match(length),
+            Self::Mismatch(_) => CigarOp::Mismatch(length),
+            Self::Insertion(_) => CigarOp::Insertion(length),
+            Self::Deletion(_) => CigarOp::Deletion(length),
         }
     }
 }
@@ -143,5 +161,180 @@ impl AlignmentResult {
             qstart,
             qend,
         }
+    }
+}
+
+pub(crate) fn get_proper_cigar(cigar: &[CigarOp], is_target: bool, strand: Strand) -> Vec<CigarOp> {
+    if is_target {
+        return cigar.to_owned();
+    }
+
+    let iter = cigar.iter().map(move |c| c.reverse());
+    if let Strand::Reverse = strand {
+        return iter.rev().collect();
+    }
+
+    iter.collect()
+}
+
+pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -> (u32, u32) {
+    // Left-alignment of indels
+    // https://github.com/lh3/minimap2/blob/master/align.c#L91
+
+    let (mut tpos, mut qpos) = (0usize, 0usize);
+    for i in 0..cigar.len() {
+        if let CigarOp::Match(l) | CigarOp::Mismatch(l) = &cigar[i] {
+            tpos += *l as usize;
+            qpos += *l as usize;
+        } else {
+            if i > 0
+                && i < cigar.len() - 1
+                && matches!(cigar[i - 1], CigarOp::Match(_) | CigarOp::Mismatch(_))
+                && matches!(cigar[i + 1], CigarOp::Match(_) | CigarOp::Mismatch(_))
+            {
+                let prev_len = match &cigar[i - 1] {
+                    CigarOp::Match(pl) => *pl as usize,
+                    CigarOp::Mismatch(pl) => *pl as usize,
+                    _ => unreachable!(),
+                };
+                let mut l = 0;
+
+                if let CigarOp::Insertion(len) = &cigar[i] {
+                    while l < prev_len {
+                        if query[qpos - 1 - l] != query[qpos + *len as usize - 1 - l] {
+                            break;
+                        }
+
+                        l += 1;
+                    }
+                } else {
+                    let len = cigar[i].get_length() as usize;
+
+                    while l < prev_len {
+                        if target[tpos - 1 - l] != target[tpos + len - 1 - l] {
+                            break;
+                        }
+
+                        l += 1;
+                    }
+                }
+
+                if l > 0 {
+                    cigar[i - 1] = match &cigar[i - 1] {
+                        CigarOp::Match(v) => CigarOp::Match(*v - l as u32),
+                        CigarOp::Mismatch(v) => CigarOp::Mismatch(*v - l as u32),
+                        _ => unreachable!(),
+                    };
+
+                    cigar[i + 1] = match &cigar[i + 1] {
+                        CigarOp::Match(v) => CigarOp::Match(*v + l as u32),
+                        CigarOp::Mismatch(v) => CigarOp::Mismatch(*v + l as u32),
+                        _ => unreachable!(),
+                    };
+
+                    tpos -= l;
+                    qpos -= l;
+                }
+
+                match &cigar[i] {
+                    CigarOp::Insertion(len) => qpos += *len as usize,
+                    CigarOp::Deletion(len) => tpos += *len as usize,
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    let mut is_start = true;
+    let (mut tshift, mut qshift) = (0, 0);
+    cigar.retain(|op| {
+        if is_start {
+            match op {
+                CigarOp::Match(l) | CigarOp::Mismatch(l) if *l > 0 => {
+                    is_start = false;
+                    return true;
+                }
+                CigarOp::Match(_) | CigarOp::Mismatch(_) => return false,
+                CigarOp::Insertion(ref l) => {
+                    is_start = false;
+                    qshift = *l;
+                    return false;
+                }
+                CigarOp::Deletion(ref l) => {
+                    is_start = false;
+                    tshift = *l;
+                    return false;
+                }
+            }
+        }
+
+        if op.get_length() > 0 {
+            return true;
+        } else {
+            return false;
+        };
+    });
+
+    let mut l = 0;
+    for i in 0..cigar.len() {
+        if i == cigar.len() - 1
+            || std::mem::discriminant(&cigar[i]) != std::mem::discriminant(&cigar[i + 1])
+        {
+            cigar[l] = cigar[i].clone();
+            l += 1;
+        } else {
+            cigar[i + 1] = cigar[i].with_length(cigar[i].get_length() + cigar[i + 1].get_length());
+        }
+    }
+    cigar.drain(l..);
+
+    (tshift, qshift)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{fix_cigar, CigarOp};
+
+    #[test]
+    fn fix_cigar_test1() {
+        let target = "TTTTGTTTTTTTTTTCTTTTTTTTTTTTTTTTTTTGCT".as_bytes();
+        let query = "TTTTGTTTTTTTTTTCTTTTTTTTTTTTTTTGCT".as_bytes();
+        let mut cigar = vec![CigarOp::Match(31), CigarOp::Deletion(4), CigarOp::Match(3)];
+
+        fix_cigar(&mut cigar, target, query);
+        assert_eq!(
+            cigar,
+            [CigarOp::Match(16), CigarOp::Deletion(4), CigarOp::Match(18)]
+        )
+    }
+
+    #[test]
+    fn fix_cigar_test2() {
+        let target = "AGCAAAAAAAAAAAAAAAGAAAAAAAAAACAAAA".as_bytes();
+        let query = "AGCAAAAAAAAAAAAAAAAAAAGAAAAAAAAAACAAAA".as_bytes();
+        let mut cigar = vec![
+            CigarOp::Match(18),
+            CigarOp::Insertion(4),
+            CigarOp::Match(16),
+        ];
+
+        fix_cigar(&mut cigar, target, query);
+        assert_eq!(
+            cigar,
+            [CigarOp::Match(3), CigarOp::Insertion(4), CigarOp::Match(31)]
+        )
+    }
+
+    #[test]
+    fn fix_cigar_test3() {
+        let target = "CACCAGGCCA".as_bytes();
+        let query = "CACCAGCCA".as_bytes();
+        let mut cigar = vec![CigarOp::Match(6), CigarOp::Deletion(1), CigarOp::Match(3)];
+
+        fix_cigar(&mut cigar, target, query);
+        assert_eq!(
+            cigar,
+            [CigarOp::Match(5), CigarOp::Deletion(1), CigarOp::Match(4)]
+        )
     }
 }

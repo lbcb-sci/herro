@@ -7,14 +7,14 @@ use std::path::Path;
 
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
-use ndarray::{s, Array, Array3, ArrayViewMut2, Axis, Slice};
+use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::aligners::CigarOp;
+use crate::aligners::{cigar_to_string, fix_cigar, get_proper_cigar, reverse_complement, CigarOp};
 use crate::haec_io::HAECRecord;
-use crate::overlaps::{Overlap, Strand};
+use crate::overlaps::{self, Overlap, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
 const TOP_K: usize = 30;
@@ -68,6 +68,7 @@ pub(crate) fn get_cigar_iterator(
 
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
+    ovlps_cigar_map: &HashMap<u32, Vec<CigarOp>>,
     tid: u32,
     tstart: usize,
     window_length: usize,
@@ -77,27 +78,25 @@ fn get_max_ins_for_window(
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
-        let cigar = get_cigar_iterator(
-            ow.overlap.cigar.as_ref().unwrap(),
-            ow.overlap.tid == tid,
-            ow.overlap.strand,
-        )
-        .skip(ow.cigar_start_idx);
+        let qid = ow.overlap.return_other_id(tid);
+        let cigar = ovlps_cigar_map.get(&qid).unwrap()[ow.cigar_start_idx..].iter();
         let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
 
         cigar.take(cigar_len).enumerate().for_each(|(i, op)| {
-            let l = match op.as_ref() {
+            let l = match op {
                 CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => *l as usize,
                 CigarOp::Insertion(l) => {
                     /*max_ins.get(tpos - 1).expect(&format!(
-                        "{} {} {} {} {} {} {:?}",
+                        "{} {} {} {} {} {} {} {} {:?}",
+                        tid,
+                        qid,
                         ow.tstart as usize % window_length,
                         ow.qstart,
                         ow.cigar_start_idx,
                         ow.cigar_start_offset,
                         ow.cigar_end_idx,
                         ow.cigar_end_offset,
-                        cigar_to_string(ow.overlap.cigar.as_ref().unwrap())
+                        cigar_to_string(&ovlps_cigar_map.get(&qid).unwrap()[ow.cigar_start_idx..])
                     ));*/
 
                     max_ins[tpos - 1] = max_ins[tpos - 1].max(*l as u16);
@@ -123,6 +122,7 @@ fn get_max_ins_for_window(
 fn get_features_for_ol_window(
     mut features: ArrayViewMut2<'_, u8>,
     window: &OverlapWindow,
+    cigar: &[CigarOp],
     query: &HAECRecord,
     offset: usize,
     tid: u32,
@@ -152,12 +152,7 @@ fn get_features_for_ol_window(
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
     // Handle cigar
-    let cigar = get_cigar_iterator(
-        window.overlap.cigar.as_ref().unwrap(),
-        window.overlap.tid == tid,
-        window.overlap.strand,
-    )
-    .skip(window.cigar_start_idx as usize);
+    let cigar = cigar[window.cigar_start_idx as usize..].iter();
 
     // Number of cigars for the window
     // TODO get error when we calculate correct number for end -> (idx, 0)
@@ -184,7 +179,7 @@ fn get_features_for_ol_window(
         .take(cigar_len)
         .enumerate()
         .for_each(|(cigar_idx, op)| {
-            let mut l = match op.as_ref() {
+            let mut l = match op {
                 CigarOp::Match(l)
                 | CigarOp::Mismatch(l)
                 | CigarOp::Deletion(l)
@@ -201,7 +196,7 @@ fn get_features_for_ol_window(
             }
 
             // Write features
-            match op.as_ref() {
+            match op {
                 CigarOp::Match(_) | CigarOp::Mismatch(_) => {
                     for i in 0..l {
                         let (base, qual) = query_iter
@@ -273,6 +268,7 @@ fn write_target_for_window(
 
 fn get_features_for_window(
     overlaps: &mut [OverlapWindow],
+    ovlps_cigar_map: &HashMap<u32, Vec<CigarOp>>,
     tid: u32,
     reads: &[HAECRecord],
     max_ins: &[u16],
@@ -296,10 +292,12 @@ fn get_features_for_window(
 
     // Write top-k overlaps for the window
     overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
+        let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
             features.index_axis_mut(Axis(0), i + 1),
             ow,
-            &reads[ow.overlap.return_other_id(tid) as usize],
+            ovlps_cigar_map.get(&qid).unwrap(),
+            &reads[qid as usize],
             ow.tstart as usize - tstart,
             tid,
             &max_ins,
@@ -330,23 +328,55 @@ pub fn extract_features<P: AsRef<Path>>(
             let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
             let mut windows = vec![Vec::new(); n_windows];
 
+            let mut ovlps_cigar_map = HashMap::new();
             for overlap in ovlps {
-                let mut cigar_iter = get_cigar_iterator(
+                let qid = overlap.return_other_id(*rid);
+
+                let mut cigar = get_proper_cigar(
                     overlap.cigar.as_ref().unwrap(),
                     overlap.tid == *rid,
                     overlap.strand,
-                )
-                .enumerate()
-                .peekable();
+                );
+
+                // TODO - get proper target and query
+                let (tstart, tend, qstart, qend) = if overlap.tid == *rid {
+                    (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
+                } else {
+                    (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
+                };
+
+                if *rid == 47898 && qid == 47895 {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        tstart,
+                        tend,
+                        qstart,
+                        qend,
+                        overlap.strand,
+                        cigar_to_string(&cigar)
+                    );
+                }
+
+                let target = &reads[*rid as usize].seq[tstart as usize..tend as usize];
+                let query = &reads[qid as usize].seq[qstart as usize..qend as usize];
+                let query = match overlap.strand {
+                    overlaps::Strand::Forward => Cow::Borrowed(query),
+                    overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
+                };
+                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query);
 
                 //Extract windows
                 extract_windows(
                     &mut windows,
                     &overlap,
-                    &mut cigar_iter,
+                    &cigar,
+                    tshift,
+                    qshift,
                     overlap.tid == *rid,
                     window_size,
                 );
+
+                ovlps_cigar_map.insert(qid, cigar);
             }
 
             // Create directory for the read
@@ -371,11 +401,17 @@ pub fn extract_features<P: AsRef<Path>>(
                 // Sort window to take TOP-K
                 windows[i].sort_by_key(|ow| OrderedFloat(-ow.overlap.accuracy.unwrap()));
 
-                let max_ins =
-                    get_max_ins_for_window(&windows[i], *rid, i * window_size as usize, win_len);
+                let max_ins = get_max_ins_for_window(
+                    &windows[i],
+                    &ovlps_cigar_map,
+                    *rid,
+                    i * window_size as usize,
+                    win_len,
+                );
 
                 let window = get_features_for_window(
                     &mut windows[i],
+                    &ovlps_cigar_map,
                     *rid,
                     reads,
                     &max_ins,

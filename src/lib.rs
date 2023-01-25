@@ -33,10 +33,10 @@ pub fn error_correction<T, U, V>(
     /*println!(
         "id for target {}, id for query {}",
         name_to_id
-            .get("b722bee0-4b68-442a-bb21-f6989afe521f")
+            .get("203260e5-49a3-464a-9651-dab446af7b1b")
             .unwrap(),
         name_to_id
-            .get("5be9633b-2e56-44d2-bc92-0cbbd1bdd8e6")
+            .get("26d0cb3e-3014-4cf7-bcdd-96a36fc9ea67")
             .unwrap()
     );*/
 

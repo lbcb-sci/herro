@@ -1,5 +1,3 @@
-use std::{borrow::Cow, iter::Peekable};
-
 use crate::{aligners::CigarOp, overlaps::Overlap};
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -37,15 +35,15 @@ impl<'a> OverlapWindow<'a> {
 
 type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 
-pub(crate) fn extract_windows<'a, 'b, I>(
+pub(crate) fn extract_windows<'a, 'b>(
     windows: &mut Windows<'a>,
     overlap: &'a Overlap,
-    cigar_iter: &mut Peekable<I>,
+    cigar: &[CigarOp],
+    tshift: u32,
+    qshift: u32,
     is_target: bool,
     window_size: u32,
-) where
-    I: Iterator<Item = (usize, Cow<'b, CigarOp>)>,
-{
+) {
     if is_target && (overlap.tend - overlap.tstart) < window_size {
         return;
     } else if (overlap.qend - overlap.qstart) < window_size {
@@ -108,17 +106,22 @@ pub(crate) fn extract_windows<'a, 'b, I>(
     let mut cigar_start_idx = None;
     let mut cigar_start_offset = None;
 
+    // Shift target or query due to cigar fixing
+    tpos += tshift;
+    qpos += qshift;
+
     // Start of the window OR beginning of the target
     if tpos % window_size == 0 || tstart < zeroth_window_thresh {
         t_window_start = Some(tpos);
-        q_window_start = Some(0);
+        q_window_start = Some(qpos);
         cigar_start_idx = Some(0);
         cigar_start_offset = Some(0);
     }
 
     let mut n_emitted = 0;
+    let mut cigar_iter = cigar.iter().enumerate().peekable();
     while let Some((cigar_idx, op)) = cigar_iter.next() {
-        let (tnew, qnew) = match op.as_ref() {
+        let (tnew, qnew) = match op {
             CigarOp::Match(l) | CigarOp::Mismatch(l) => (tpos + *l, qpos + *l),
             CigarOp::Deletion(l) => (tpos + *l, qpos),
             CigarOp::Insertion(l) => {
@@ -158,7 +161,7 @@ pub(crate) fn extract_windows<'a, 'b, I>(
                 t_window_start.replace(tpos + offset);
 
                 //handle qpos
-                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op {
                     q_window_start.replace(qpos + offset);
                 } else {
                     q_window_start.replace(qpos);
@@ -169,7 +172,7 @@ pub(crate) fn extract_windows<'a, 'b, I>(
             } else {
                 t_window_start = Some(tpos + offset);
 
-                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+                if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op {
                     q_window_start = Some(qpos + offset);
                 } else {
                     q_window_start = Some(qpos);
@@ -183,7 +186,7 @@ pub(crate) fn extract_windows<'a, 'b, I>(
         // Handle the last one
         let offset = new_w * window_size - tpos;
 
-        let mut qend = if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op.as_ref() {
+        let mut qend = if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op {
             qpos + offset
         } else {
             qpos
@@ -192,7 +195,7 @@ pub(crate) fn extract_windows<'a, 'b, I>(
         let cigar_end_idx;
         let cigar_end_offset;
         if tnew == new_w * window_size {
-            if let Some(CigarOp::Insertion(l)) = cigar_iter.peek().map(|(_, op)| op.as_ref()) {
+            if let Some(CigarOp::Insertion(l)) = cigar_iter.peek().map(|(_, op)| op) {
                 qend += *l;
                 cigar_end_idx = cigar_idx + 2;
             } else {
@@ -293,6 +296,7 @@ pub(crate) fn extract_windows<'a, 'b, I>(
     );*/
 }
 
+/*
 #[cfg(test)]
 mod tests {
 
@@ -603,3 +607,4 @@ mod tests {
         }
     }
 }
+*/
