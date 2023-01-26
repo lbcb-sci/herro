@@ -1,6 +1,7 @@
 use std::{borrow::Cow, sync::Arc};
 
 use indicatif::ParallelProgressIterator;
+use itertools::Itertools;
 use rayon::prelude::*;
 use thread_local::ThreadLocal;
 
@@ -165,19 +166,45 @@ impl AlignmentResult {
 }
 
 pub(crate) fn get_proper_cigar(cigar: &[CigarOp], is_target: bool, strand: Strand) -> Vec<CigarOp> {
-    if is_target {
-        return cigar.to_owned();
+    // Replace mismatch with match
+    let cigar = cigar.iter().map(|op| {
+        if let CigarOp::Mismatch(l) = op {
+            CigarOp::Match(*l)
+        } else {
+            op.clone()
+        }
+    });
+
+    let iter: Box<dyn Iterator<Item = CigarOp>>;
+    if !is_target {
+        let iter_rev = cigar.map(|c| c.reverse());
+        if let Strand::Reverse = strand {
+            iter = Box::new(iter_rev.rev());
+        } else {
+            iter = Box::new(iter_rev);
+        }
+    } else {
+        iter = Box::new(cigar);
     }
 
-    let iter = cigar.iter().map(move |c| c.reverse());
-    if let Strand::Reverse = strand {
-        return iter.rev().collect();
-    }
-
-    iter.collect()
+    // Merge ops -> because of converting mismatches to matches
+    iter.coalesce(|prev_op, curr_op| {
+        if std::mem::discriminant(&prev_op) == std::mem::discriminant(&curr_op) {
+            Ok(prev_op.with_length(prev_op.get_length() + curr_op.get_length()))
+        } else {
+            Err((prev_op, curr_op))
+        }
+    })
+    .collect()
 }
 
-pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -> (u32, u32) {
+pub(crate) fn fix_cigar(
+    cigar: &mut Vec<CigarOp>,
+    target: &[u8],
+    query: &[u8],
+    tid: u32,
+    qid: u32,
+) -> (u32, u32) {
     // Left-alignment of indels
     // https://github.com/lh3/minimap2/blob/master/align.c#L91
 
@@ -235,12 +262,12 @@ pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -
                     tpos -= l;
                     qpos -= l;
                 }
+            }
 
-                match &cigar[i] {
-                    CigarOp::Insertion(len) => qpos += *len as usize,
-                    CigarOp::Deletion(len) => tpos += *len as usize,
-                    _ => unreachable!(),
-                }
+            match &cigar[i] {
+                CigarOp::Insertion(len) => qpos += *len as usize,
+                CigarOp::Deletion(len) => tpos += *len as usize,
+                _ => unreachable!(),
             }
         }
     }

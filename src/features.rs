@@ -345,7 +345,7 @@ pub fn extract_features<P: AsRef<Path>>(
                     (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
                 };
 
-                if *rid == 47898 && qid == 47895 {
+                /*if *rid == 47898 && qid == 47895 {
                     println!(
                         "{}\t{}\t{}\t{}\t{}\t{}",
                         tstart,
@@ -355,7 +355,7 @@ pub fn extract_features<P: AsRef<Path>>(
                         overlap.strand,
                         cigar_to_string(&cigar)
                     );
-                }
+                }*/
 
                 let target = &reads[*rid as usize].seq[tstart as usize..tend as usize];
                 let query = &reads[qid as usize].seq[qstart as usize..qend as usize];
@@ -363,7 +363,19 @@ pub fn extract_features<P: AsRef<Path>>(
                     overlaps::Strand::Forward => Cow::Borrowed(query),
                     overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
                 };
-                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query);
+                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query, *rid, qid);
+
+                /*if *rid == 47898 && qid == 47895 {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        tstart,
+                        tend,
+                        qstart,
+                        qend,
+                        overlap.strand,
+                        cigar_to_string(&cigar)
+                    );
+                }*/
 
                 //Extract windows
                 extract_windows(
