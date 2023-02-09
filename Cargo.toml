@@ -9,7 +9,7 @@ edition = "2021"
 bindgen = "~0.63.0"
 
 [dependencies]
-clap = {version = "~4.0.18", features = ["derive"]}
+clap = {version = "~4.1.4", features = ["derive"]}
 needletail = "~0.4.1"
 lazy_static = "~1.4.0"
 itertools = "~0.10.5"

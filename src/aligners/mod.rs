@@ -198,13 +198,7 @@ pub(crate) fn get_proper_cigar(cigar: &[CigarOp], is_target: bool, strand: Stran
     .collect()
 }
 
-pub(crate) fn fix_cigar(
-    cigar: &mut Vec<CigarOp>,
-    target: &[u8],
-    query: &[u8],
-    tid: u32,
-    qid: u32,
-) -> (u32, u32) {
+pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -> (u32, u32) {
     // Left-alignment of indels
     // https://github.com/lh3/minimap2/blob/master/align.c#L91
 

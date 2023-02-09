@@ -4,6 +4,7 @@ use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
+use std::process::exit;
 
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
@@ -151,13 +152,14 @@ fn get_features_for_ol_window(
     };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
-    // Handle cigar
-    let cigar = cigar[window.cigar_start_idx as usize..].iter();
-
     // Number of cigars for the window
     // TODO get error when we calculate correct number for end -> (idx, 0)
     // Works for this expression but unecessarily iterates through (idx, 0)
     let cigar_len = window.cigar_end_idx - window.cigar_start_idx + 1;
+    let cigar_end = cigar.len().min((window.cigar_end_idx + 1) as usize);
+
+    // Handle cigar
+    let cigar = cigar[window.cigar_start_idx as usize..cigar_end].iter();
 
     // Get features
     let gap = if let Strand::Forward = window.overlap.strand {
@@ -345,7 +347,7 @@ pub fn extract_features<P: AsRef<Path>>(
                     (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
                 };
 
-                /*if *rid == 47898 && qid == 47895 {
+                /*if *rid == 26372 && qid == 61014 {
                     println!(
                         "{}\t{}\t{}\t{}\t{}\t{}",
                         tstart,
@@ -355,6 +357,7 @@ pub fn extract_features<P: AsRef<Path>>(
                         overlap.strand,
                         cigar_to_string(&cigar)
                     );
+                    exit(-1);
                 }*/
 
                 let target = &reads[*rid as usize].seq[tstart as usize..tend as usize];
@@ -363,7 +366,7 @@ pub fn extract_features<P: AsRef<Path>>(
                     overlaps::Strand::Forward => Cow::Borrowed(query),
                     overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
                 };
-                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query, *rid, qid);
+                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query);
 
                 /*if *rid == 47898 && qid == 47895 {
                     println!(

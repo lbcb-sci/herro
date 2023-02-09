@@ -1,14 +1,16 @@
 use std::io::prelude::*;
+use std::process::exit;
 use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
 
 use aligners::align_overlaps;
 use features::extract_features;
 
-use crate::aligners::cigar_to_string;
+use crate::aligners::{cigar_to_string, CigarOp};
 
 mod aligners;
 mod features;
 mod haec_io;
+mod inference;
 mod overlaps;
 mod windowing;
 
@@ -43,7 +45,6 @@ pub fn error_correction<T, U, V>(
     eprintln!("Parsed {} reads.", reads.len());
 
     let mut overlaps = overlaps::process_overlaps(overlaps::parse_paf(paf_path, &name_to_id));
-    //overlaps.truncate(500_000);
     eprintln!("Parsed {} overlaps", overlaps.len());
 
     rayon::ThreadPoolBuilder::new()
@@ -52,5 +53,14 @@ pub fn error_correction<T, U, V>(
         .unwrap();
 
     align_overlaps(&mut overlaps, &reads);
+    overlaps.retain(|o| {
+        let long_indel = o.cigar.as_ref().unwrap().iter().any(|op| match op {
+            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
+            _ => false,
+        });
+
+        o.accuracy.unwrap() >= 0.80 && !long_indel
+    });
+
     extract_features(&reads, &overlaps, window_size, output_path);
 }

@@ -1,3 +1,5 @@
+use std::str::from_utf8;
+
 use itertools::Itertools;
 
 use super::{AlignmentResult, CigarOp};
@@ -107,6 +109,7 @@ impl WFAAlignerBuilder {
     pub fn build(mut self) -> WFAAligner {
         unsafe {
             self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
+
             let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
             WFAAligner { aligner }
         }
@@ -168,16 +171,16 @@ impl WFAAligner {
     pub fn default() -> Self {
         let mut builder = WFAAlignerBuilder::new();
 
+        //BiWFA
+        builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
+
         // Similar to minimap2 defaults
         builder.set_distance_metric(WFADistanceMetric::GapAffine {
             match_: 0,
-            mismatch: 6,
+            mismatch: 5,
             gap_opening: 4,
             gap_extension: 2,
         });
-
-        //BiWFA
-        builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
 
         builder.build()
     }
@@ -281,6 +284,33 @@ fn cigar_merge_ops(cigar: &[u8]) -> Vec<CigarOp> {
         })
         .map_into::<CigarOp>()
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::aligners::{cigar_to_string, wfa::WFAAligner};
+
+    #[test]
+    fn test_aligner() {
+        let target = "AAAACTCTTTCCTGA";
+        let query = "AAAAACCTTCTGA";
+
+        let aligner = WFAAligner::default();
+        let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
+
+        println!("{}", cigar_to_string(&cigar.cigar));
+    }
+
+    #[test]
+    fn test_aligner2() {
+        let target = "TCAGAAGGTTTTT";
+        let query = "TCAGGAAAGAGTTTT";
+
+        let aligner = WFAAligner::default();
+        let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
+
+        println!("{}", cigar_to_string(&cigar.cigar));
+    }
 }
 
 /*
