@@ -63,7 +63,7 @@ impl WFAAlignerBuilder {
                 gap_opening2,
                 gap_extension2,
             } => {
-                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine;
+                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine_2p;
                 self.attributes.affine2p_penalties.match_ = match_;
                 self.attributes.affine2p_penalties.mismatch = mismatch;
                 self.attributes.affine2p_penalties.gap_opening1 = gap_opening1;
@@ -175,11 +175,20 @@ impl WFAAligner {
         builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
 
         // Similar to minimap2 defaults
-        builder.set_distance_metric(WFADistanceMetric::GapAffine {
+        /*builder.set_distance_metric(WFADistanceMetric::GapAffine {
             match_: 0,
             mismatch: 5,
             gap_opening: 4,
             gap_extension: 2,
+        });*/
+
+        builder.set_distance_metric(WFADistanceMetric::GapAffine2p {
+            match_: 0,
+            mismatch: 5,
+            gap_opening1: 6,
+            gap_extension1: 2,
+            gap_opening2: 12,
+            gap_extension2: 1,
         });
 
         builder.build()

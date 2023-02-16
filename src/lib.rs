@@ -53,9 +53,24 @@ pub fn error_correction<T, U, V>(
         .unwrap();
 
     align_overlaps(&mut overlaps, &reads);
+
+    /*overlaps.iter().for_each(|o| {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            &reads[o.qid as usize].id,
+            o.qstart,
+            o.qend,
+            &reads[o.tid as usize].id,
+            o.tstart,
+            o.tend,
+            cigar_to_string(o.cigar.as_ref().unwrap())
+        )
+    });
+    exit(-1);*/
+
     overlaps.retain(|o| {
         let long_indel = o.cigar.as_ref().unwrap().iter().any(|op| match op {
-            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
+            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 30 => true,
             _ => false,
         });
 
