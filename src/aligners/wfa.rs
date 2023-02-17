@@ -187,7 +187,7 @@ impl WFAAligner {
             mismatch: 5,
             gap_opening1: 6,
             gap_extension1: 2,
-            gap_opening2: 12,
+            gap_opening2: 24,
             gap_extension2: 1,
         });
 
