@@ -70,7 +70,7 @@ pub fn error_correction<T, U, V>(
 
     overlaps.retain(|o| {
         let long_indel = o.cigar.as_ref().unwrap().iter().any(|op| match op {
-            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 30 => true,
+            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
             _ => false,
         });
 
