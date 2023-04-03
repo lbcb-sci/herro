@@ -1,11 +1,9 @@
-use std::io::prelude::*;
-use std::process::exit;
-use std::{collections::HashMap, fs::File, io::BufWriter, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use aligners::align_overlaps;
 use features::extract_features;
 
-use crate::aligners::{cigar_to_string, CigarOp};
+use crate::aligners::CigarOp;
 
 mod aligners;
 mod features;
@@ -31,17 +29,6 @@ pub fn error_correction<T, U, V>(
         .enumerate()
         .map(|(i, e)| (e.id.as_str(), i as u32))
         .collect();
-
-    /*println!(
-        "id for target {}, id for query {}",
-        name_to_id
-            .get("203260e5-49a3-464a-9651-dab446af7b1b")
-            .unwrap(),
-        name_to_id
-            .get("26d0cb3e-3014-4cf7-bcdd-96a36fc9ea67")
-            .unwrap()
-    );*/
-
     eprintln!("Parsed {} reads.", reads.len());
 
     let mut overlaps = overlaps::process_overlaps(overlaps::parse_paf(paf_path, &name_to_id));
@@ -54,21 +41,11 @@ pub fn error_correction<T, U, V>(
 
     align_overlaps(&mut overlaps, &reads);
 
-    /*overlaps.iter().for_each(|o| {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            &reads[o.qid as usize].id,
-            o.qstart,
-            o.qend,
-            &reads[o.tid as usize].id,
-            o.tstart,
-            o.tend,
-            cigar_to_string(o.cigar.as_ref().unwrap())
-        )
-    });
-    exit(-1);*/
-
     overlaps.retain(|o| {
+        if o.cigar.is_none() {
+            return false;
+        }
+
         let long_indel = o.cigar.as_ref().unwrap().iter().any(|op| match op {
             CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
             _ => false,

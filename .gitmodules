@@ -1,3 +1,4 @@
 [submodule "WFA2-lib"]
 	path = WFA2-lib
 	url = https://github.com/smarco/WFA2-lib
+	branch = development

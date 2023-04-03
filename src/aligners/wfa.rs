@@ -1,5 +1,3 @@
-use std::str::from_utf8;
-
 use itertools::Itertools;
 
 use super::{AlignmentResult, CigarOp};
@@ -108,11 +106,10 @@ impl WFAAlignerBuilder {
 
     pub fn build(mut self) -> WFAAligner {
         unsafe {
-            self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
-            /*self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_wfadaptive;
+            self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_wfadaptive;
             self.attributes.heuristic.min_wavefront_length = 10;
-            self.attributes.heuristic.max_distance_threshold = 50;
-            self.attributes.heuristic.steps_between_cutoffs = 1;*/
+            self.attributes.heuristic.max_distance_threshold = 100;
+            self.attributes.heuristic.steps_between_cutoffs = 1;
 
             let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
             WFAAligner { aligner }
@@ -177,14 +174,6 @@ impl WFAAligner {
 
         //BiWFA
         builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
-
-        // Similar to minimap2 defaults
-        /*builder.set_distance_metric(WFADistanceMetric::GapAffine {
-            match_: 0,
-            mismatch: 5,
-            gap_opening: 4,
-            gap_extension: 2,
-        });*/
 
         builder.set_distance_metric(WFADistanceMetric::GapAffine2p {
             match_: 0,

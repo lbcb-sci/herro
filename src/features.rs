@@ -4,7 +4,6 @@ use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
-use std::process::exit;
 
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
@@ -13,7 +12,7 @@ use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::aligners::{cigar_to_string, fix_cigar, get_proper_cigar, reverse_complement, CigarOp};
+use crate::aligners::{fix_cigar, get_proper_cigar, reverse_complement, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::overlaps::{self, Overlap, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
@@ -46,25 +45,6 @@ fn get_reads_to_overlaps(overlaps: &[Overlap]) -> HashMap<u32, Vec<&Overlap>> {
     }
 
     read_to_overlaps
-}
-
-pub(crate) fn get_cigar_iterator(
-    cigar: &[CigarOp],
-    is_target: bool,
-    strand: Strand,
-) -> Box<dyn DoubleEndedIterator<Item = Cow<CigarOp>> + '_> {
-    let iter = cigar.iter().map(move |c| {
-        if is_target {
-            Cow::Borrowed(c)
-        } else {
-            Cow::Owned(c.reverse())
-        }
-    });
-
-    match strand {
-        Strand::Reverse if !is_target => Box::new(iter.rev()),
-        _ => Box::new(iter),
-    }
 }
 
 fn get_max_ins_for_window(
@@ -398,10 +378,6 @@ pub fn extract_features<P: AsRef<Path>>(
             let output_path = output_path.as_ref().join(&read.id);
             create_dir_all(&output_path).expect("Cannot create directory");
 
-            /*if reads[*rid as usize].id == "b722bee0-4b68-442a-bb21-f6989afe521f" {
-                print_overlaps(ovlps, reads);
-            }*/
-
             for i in 0..n_windows {
                 if windows[i].len() == 0 {
                     continue;
@@ -467,26 +443,4 @@ fn output_features<P: AsRef<Path>>(
     //Array::from(max_ins).write_npy(file).unwrap();
 
     Ok(())
-}
-
-fn print_overlaps(overlaps: &[&Overlap], reads: &[HAECRecord]) {
-    let file = File::create("overlaps.tsv").unwrap();
-    let mut writer = BufWriter::new(file);
-
-    for overlap in overlaps {
-        writeln!(
-            &mut writer,
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            reads[overlap.qid as usize].id,
-            overlap.qlen,
-            overlap.qstart,
-            overlap.qend,
-            overlap.strand,
-            reads[overlap.tid as usize].id,
-            overlap.tlen,
-            overlap.tstart,
-            overlap.tend
-        )
-        .unwrap();
-    }
 }

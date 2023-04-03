@@ -118,7 +118,6 @@ pub(crate) fn extract_windows<'a, 'b>(
         cigar_start_offset = Some(0);
     }
 
-    let mut n_emitted = 0;
     let mut cigar_iter = cigar.iter().enumerate().peekable();
     while let Some((cigar_idx, op)) = cigar_iter.next() {
         let (tnew, qnew) = match op {
@@ -156,7 +155,6 @@ pub(crate) fn extract_windows<'a, 'b>(
                     cigar_idx,
                     offset,
                 ));
-                n_emitted += 1;
 
                 t_window_start.replace(tpos + offset);
 
@@ -218,7 +216,6 @@ pub(crate) fn extract_windows<'a, 'b>(
                 cigar_end_idx,
                 cigar_end_offset,
             ));
-            n_emitted += 1;
 
             t_window_start.replace(tpos + offset);
             q_window_start.replace(qend);
@@ -246,54 +243,7 @@ pub(crate) fn extract_windows<'a, 'b>(
             overlap.cigar.as_ref().unwrap().len(),
             0,
         ));
-
-        n_emitted += 1;
     }
-
-    /*assert_eq!(
-        qpos,
-        if is_target {
-            overlap.qend - overlap.qstart
-        } else {
-            overlap.tend - overlap.tstart
-        },
-        "Qpos and query length should be the same."
-    );
-
-    assert_eq!(
-        tpos,
-        if is_target {
-            overlap.tend
-        } else {
-            overlap.qend
-        },
-        "Tpos and end should be the same"
-    );
-    assert_eq!(
-        last_window - first_window,
-        n_emitted,
-        "FW: {}, LW: {}, ST: {}, EN: {}, LEN: {}, TP: {}, NE: {}, IS_T: {}",
-        first_window,
-        last_window,
-        if is_target {
-            overlap.tstart
-        } else {
-            overlap.qstart
-        },
-        if is_target {
-            overlap.tend
-        } else {
-            overlap.qend
-        },
-        if is_target {
-            overlap.tlen
-        } else {
-            overlap.qlen
-        },
-        tpos,
-        n_emitted,
-        is_target
-    );*/
 }
 
 /*

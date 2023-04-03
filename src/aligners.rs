@@ -71,6 +71,7 @@ impl ToString for CigarOp {
     }
 }
 
+#[allow(dead_code)]
 pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
@@ -109,7 +110,12 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
             let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];
 
-            let align_result = aligner.align(&query, target).unwrap();
+            let align_result = aligner.align(&query, target);
+            if align_result.is_none() {
+                return;
+            }
+
+            let align_result = align_result.unwrap();
             o.cigar = Some(align_result.cigar);
 
             o.tstart += align_result.tstart;

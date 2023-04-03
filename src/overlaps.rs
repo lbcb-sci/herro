@@ -6,7 +6,10 @@ use std::{
     path::Path,
 };
 
-use crate::aligners::CigarOp;
+use crate::aligners::{cigar_to_string, CigarOp};
+use crate::haec_io::HAECRecord;
+
+const OL_THRESHOLD: u32 = 2500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
@@ -94,10 +97,6 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-const EXTEND_LENGTH: u32 = 500;
-const OL_THRESHOLD: u32 = 500;
-const DOUBLE_OL_THRESHOLD: u32 = 2 * OL_THRESHOLD;
-
 pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Vec<Overlap> {
     let file = File::open(path).expect("Cannot open overlap file.");
     let reader = BufReader::new(file);
@@ -158,6 +157,7 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
     overlaps
 }
 
+#[allow(dead_code)]
 fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
     let mut ovlps_for_pairs = HashMap::new();
     for i in 0..overlaps.len() {
@@ -181,14 +181,6 @@ fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
     }
 
     kept_overlap_ids
-}
-
-fn extend_overlap(overlap: &mut Overlap) {
-    overlap.qstart = overlap.qstart.checked_sub(EXTEND_LENGTH).unwrap_or(0);
-    overlap.qend = overlap.qlen.min(overlap.qend + EXTEND_LENGTH); // Should not overflow
-
-    overlap.tstart = overlap.tstart.checked_sub(EXTEND_LENGTH).unwrap_or(0);
-    overlap.tend = overlap.tlen.min(overlap.tend + EXTEND_LENGTH);
 }
 
 fn is_valid_overlap(overlap: &Overlap) -> bool {
@@ -244,11 +236,53 @@ pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
     })
     .collect()*/
 
-    overlaps
+    let mut overlaps: Vec<Overlap> = overlaps
         .into_iter()
         .filter(|o| {
             let b = is_valid_overlap(o);
             b
         })
-        .collect()
+        .collect();
+
+    overlaps.iter_mut().for_each(|mut o| match o.strand {
+        Strand::Forward => {
+            let beginning = o.tstart.min(o.qstart).min(2500);
+            o.tstart -= beginning;
+            o.qstart -= beginning;
+            let end = (o.tlen - o.tend).min(o.qlen - o.qend).min(2500);
+            o.tend += end;
+            o.qend += end;
+        }
+        Strand::Reverse => {
+            let beginning = o.tstart.min(o.qlen - o.qend).min(2500);
+            o.tstart -= beginning;
+            o.qend += beginning;
+
+            let end = (o.tlen - o.tend).min(o.qstart).min(2500);
+            o.tend += end;
+            o.qstart -= end;
+        }
+    });
+    overlaps
+}
+
+pub(crate) fn print_overlaps(overlaps: &[Overlap], reads: &[HAECRecord]) {
+    for overlap in overlaps {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            reads[overlap.qid as usize].id,
+            overlap.qlen,
+            overlap.qstart,
+            overlap.qend,
+            overlap.strand,
+            reads[overlap.tid as usize].id,
+            overlap.tlen,
+            overlap.tstart,
+            overlap.tend,
+            match overlap.cigar {
+                Some(ref c) => cigar_to_string(c),
+                None => "".to_string(),
+            }
+        )
+    }
 }

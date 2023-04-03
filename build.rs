@@ -24,23 +24,21 @@ use std::path::PathBuf;
 
 fn wfa() {
     // 1. Link instructions for Cargo.
-
     // The directory of the WFA libraries, added to the search path.
-    println!("cargo:rustc-link-search=WFA2-lib/lib");
+    println!("cargo:rustc-link-search=WFA2-lib/build");
     // Link the `wfa-lib` library.
-    println!("cargo:rustc-link-lib=wfa");
+    println!("cargo:rustc-link-lib=static=wfa2");
     // Also link `omp`.
     println!("cargo:rustc-link-lib=gomp");
     // Invalidate the built crate whenever the linked library changes.
-    println!("cargo:rerun-if-changed=WFA2-lib/lib/libwfa.a");
+    println!("cargo:rerun-if-changed=WFA2-lib/build/libwfa2.a");
 
     // 2. Generate bindings.
-
     let bindings = bindgen::Builder::default()
         // Generate bindings for this header file.
-        .header("WFA2-lib/wavefront/wavefront_align.h")
+        .header("wrapper.h")
         // Add this directory to the include path to find included header files.
-        .clang_arg("-I./WFA2-lib")
+        .clang_args(&["-IWFA2-lib/"])
         // Generate bindings for all functions starting with `wavefront_`.
         .allowlist_function("wavefront_.*")
         // Generate bindings for all variables starting with `wavefront_`.
