@@ -97,7 +97,6 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
     overlaps
         .par_iter_mut()
-        //.with_min_len(10)
         .progress_count(n_overlaps as u64)
         .for_each_with(aligners, |aligners, o| {
             let aligner = aligners.get_or(|| wfa::WFAAligner::default());

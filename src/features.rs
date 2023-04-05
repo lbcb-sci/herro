@@ -67,19 +67,6 @@ fn get_max_ins_for_window(
             let l = match op {
                 CigarOp::Match(l) | CigarOp::Mismatch(l) | CigarOp::Deletion(l) => *l as usize,
                 CigarOp::Insertion(l) => {
-                    /*max_ins.get(tpos - 1).expect(&format!(
-                        "{} {} {} {} {} {} {} {} {:?}",
-                        tid,
-                        qid,
-                        ow.tstart as usize % window_length,
-                        ow.qstart,
-                        ow.cigar_start_idx,
-                        ow.cigar_start_offset,
-                        ow.cigar_end_idx,
-                        ow.cigar_end_offset,
-                        cigar_to_string(&ovlps_cigar_map.get(&qid).unwrap()[ow.cigar_start_idx..])
-                    ));*/
-
                     max_ins[tpos - 1] = max_ins[tpos - 1].max(*l as u16);
                     return;
                 }
@@ -327,19 +314,6 @@ pub fn extract_features<P: AsRef<Path>>(
                     (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
                 };
 
-                /*if *rid == 26372 && qid == 61014 {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        tstart,
-                        tend,
-                        qstart,
-                        qend,
-                        overlap.strand,
-                        cigar_to_string(&cigar)
-                    );
-                    exit(-1);
-                }*/
-
                 let target = &reads[*rid as usize].seq[tstart as usize..tend as usize];
                 let query = &reads[qid as usize].seq[qstart as usize..qend as usize];
                 let query = match overlap.strand {
@@ -347,18 +321,6 @@ pub fn extract_features<P: AsRef<Path>>(
                     overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
                 };
                 let (tshift, qshift) = fix_cigar(&mut cigar, target, &query);
-
-                /*if *rid == 47898 && qid == 47895 {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}\t{}",
-                        tstart,
-                        tend,
-                        qstart,
-                        qend,
-                        overlap.strand,
-                        cigar_to_string(&cigar)
-                    );
-                }*/
 
                 //Extract windows
                 extract_windows(
@@ -437,10 +399,6 @@ fn output_features<P: AsRef<Path>>(
     let features_path = path.as_ref().join(format!("{}.features.npy", window_id));
     let file = File::create(features_path)?;
     features.write_npy(file).unwrap();
-
-    //let ins_path = path.as_ref().join(format!("{}.ins.npy", window_id));
-    //let file = File::create(ins_path)?;
-    //Array::from(max_ins).write_npy(file).unwrap();
 
     Ok(())
 }
