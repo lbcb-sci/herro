@@ -212,7 +212,7 @@ impl WFAAligner {
                 let cigar = std::slice::from_raw_parts(cigar_start as *mut u8, size as usize);
 
                 // Alignment successful
-                Some(get_alignment_results(cigar))
+                get_alignment_results(cigar)
             } else {
                 None // Unsuccessful
             }
@@ -220,72 +220,98 @@ impl WFAAligner {
     }
 }
 
-fn get_alignment_results(cigar: &[u8]) -> AlignmentResult {
+fn get_alignment_results(cigar: &[u8]) -> Option<AlignmentResult> {
     let (mut tstart, mut qstart) = (0, 0);
     let mut i = 0;
     let mut cm = 0; // consecutive matches
 
     loop {
-        match cigar[i] as char {
-            'M' => {
+        match cigar.get(i).map(|c| *c as char) {
+            Some('M') => {
                 cm += 1;
                 if cm == MIN_END_MATCHES {
                     break;
                 }
             }
-            'X' => {
+            Some('X') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 tstart += 1;
                 qstart += 1;
             }
-            'D' => {
+            Some('D') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 tstart += 1;
             }
-            'I' => {
+            Some('I') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 qstart += 1;
             }
-            _ => panic!("Invalid cigar op"),
+            Some(_) => panic!("Invalid cigar op"),
+            None => {
+                return None;
+            }
         }
 
         i += 1;
     }
+
+    i -= MIN_END_MATCHES as usize - 1;
 
     let (mut tend, mut qend) = (0, 0);
     let mut j = cigar.len() - 1;
     cm = 0;
 
     loop {
-        match cigar[j] as char {
-            'M' => {
+        match cigar.get(j).map(|c| *c as char) {
+            Some('M') => {
                 cm += 1;
                 if cm == MIN_END_MATCHES {
                     break;
                 }
             }
-            'X' => {
+            Some('X') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 tend += 1;
                 qend += 1;
             }
-            'D' => {
+            Some('D') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 tend += 1;
             }
-            'I' => {
+            Some('I') => {
+                tstart += cm as u32;
+                qstart += cm as u32;
                 cm = 0;
+
                 qend += 1;
             }
-            _ => panic!("Invalid cigar op"),
+            Some(_) => panic!("Invalid cigar op"),
+            None => {
+                return None;
+            }
         }
 
         j -= 1;
     }
-    j += 1; // Move to exclusive
+    j += MIN_END_MATCHES as usize; // Move to exclusive
 
     let cigar = cigar_merge_ops(&cigar[i..j]);
-    AlignmentResult::new(cigar, tstart, tend, qstart, qend)
+    Some(AlignmentResult::new(cigar, tstart, tend, qstart, qend))
 }
 
 impl Drop for WFAAligner {
