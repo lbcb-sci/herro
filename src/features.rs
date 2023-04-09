@@ -276,6 +276,15 @@ fn get_features_for_window(
     features
 }
 
+fn overlap_window_filter(accuracy: f32, cigar: &[CigarOp]) -> bool {
+    let long_indel = cigar.iter().any(|op| match op {
+        CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
+        _ => false,
+    });
+
+    accuracy >= 0.80 && !long_indel
+}
+
 pub fn extract_features<P: AsRef<Path>>(
     reads: &[HAECRecord],
     overlaps: &[Overlap],
@@ -350,6 +359,19 @@ pub fn extract_features<P: AsRef<Path>>(
                 } else {
                     window_size as usize
                 };
+
+                // Filter windows
+                windows[i].retain(|ow| {
+                    let qid = ow.overlap.return_other_id(*rid);
+
+                    // TODO: Handle CIGAR offsets
+                    let cigar = ovlps_cigar_map.get(&qid).unwrap();
+                    let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
+                    overlap_window_filter(
+                        ow.overlap.accuracy.unwrap(),
+                        &cigar[ow.cigar_start_idx..cigar_end],
+                    )
+                });
 
                 // Sort window to take TOP-K
                 windows[i].sort_by_key(|ow| OrderedFloat(-ow.overlap.accuracy.unwrap()));

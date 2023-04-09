@@ -240,7 +240,7 @@ pub(crate) fn extract_windows<'a, 'b>(
             q_window_start.unwrap(),
             cigar_start_idx.unwrap(),
             cigar_start_offset.unwrap(),
-            overlap.cigar.as_ref().unwrap().len(),
+            cigar.len(),
             0,
         ));
     }

@@ -40,19 +40,7 @@ pub fn error_correction<T, U, V>(
         .unwrap();
 
     align_overlaps(&mut overlaps, &reads);
-
-    overlaps.retain(|o| {
-        if o.cigar.is_none() {
-            return false;
-        }
-
-        let long_indel = o.cigar.as_ref().unwrap().iter().any(|op| match op {
-            CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 50 => true,
-            _ => false,
-        });
-
-        o.accuracy.unwrap() >= 0.80 && !long_indel
-    });
+    overlaps.retain(|o| o.cigar.is_some());
 
     extract_features(&reads, &overlaps, window_size, output_path);
 }
