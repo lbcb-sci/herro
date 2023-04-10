@@ -108,6 +108,7 @@ impl WFAAlignerBuilder {
 
     pub fn build(mut self) -> WFAAligner {
         unsafe {
+            //self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
             self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_wfadaptive;
             self.attributes.heuristic.min_wavefront_length = 10;
             self.attributes.heuristic.max_distance_threshold = 200;
