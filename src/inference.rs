@@ -1,0 +1,359 @@
+use std::{
+    collections::HashMap,
+    fmt::write,
+    fs::File,
+    io::{BufWriter, Write},
+    path::Path,
+};
+
+use crossbeam_channel::{Receiver, Sender};
+use itertools::Itertools;
+use lazy_static::lazy_static;
+use ndarray::{s, Array2, Array3, Axis};
+use tch::{CModule, IValue, IndexOp, Tensor};
+
+use crate::haec_io::HAECRecord;
+
+const BATCH_SIZE: usize = 8;
+const BASE_PADDING: u8 = 11;
+const QUAL_MIN_VAL: f32 = 33.;
+const QUAL_MAX_VAL: f32 = 73.;
+
+lazy_static! {
+    static ref BASES_MAP: [u8; 256] = {
+        let mut map = [0; 256];
+        map[b'A' as usize] = 0;
+        map[b'C' as usize] = 1;
+        map[b'G' as usize] = 2;
+        map[b'T' as usize] = 3;
+        map[b'*' as usize] = 4;
+        map[b'a' as usize] = 5;
+        map[b'c' as usize] = 6;
+        map[b'g' as usize] = 7;
+        map[b't' as usize] = 8;
+        map[b'#' as usize] = 9;
+        map[b'.' as usize] = 10;
+        map
+    };
+    static ref BASES_UPPER: [u8; 256] = {
+        let mut map = [0; 256];
+        map[b'A' as usize] = b'A';
+        map[b'C' as usize] = b'C';
+        map[b'G' as usize] = b'G';
+        map[b'T' as usize] = b'T';
+        map[b'*' as usize] = b'*';
+        map[b'a' as usize] = b'A';
+        map[b'c' as usize] = b'C';
+        map[b'g' as usize] = b'G';
+        map[b't' as usize] = b'T';
+        map[b'#' as usize] = b'*';
+        map
+    };
+}
+
+pub(crate) struct InputData {
+    rid: u32,
+    windows: Vec<Features>,
+}
+
+impl InputData {
+    fn new(rid: u32, windows: Vec<Features>) -> Self {
+        Self { rid, windows }
+    }
+}
+
+pub(crate) struct Features {
+    wid: u16,
+    bases: Array2<u8>,  // [L, R]
+    quals: Array2<f32>, // [L, R]
+    target_positions: Vec<i32>,
+}
+
+impl Features {
+    fn new(wid: u16, bases: Array2<u8>, quals: Array2<f32>, target_positions: Vec<i32>) -> Self {
+        Self {
+            wid,
+            bases,
+            quals,
+            target_positions,
+        }
+    }
+}
+
+pub(crate) struct OutputData {
+    rid: u32,
+    windows: Vec<Output>,
+}
+
+type Output = (u16, Array2<u8>, Vec<f32>); // wid, bases, logits
+
+impl OutputData {
+    fn new(rid: u32, windows: Vec<Output>) -> Self {
+        Self { rid, windows }
+    }
+}
+
+fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
+    // Get longest sequence
+    let length = batch.iter().map(|f| f.bases.len_of(Axis(0))).max().unwrap();
+    let size = [
+        batch.len() as i64,
+        length as i64,
+        batch[0].bases.len_of(Axis(1)) as i64,
+    ]; // [B, L, R]
+
+    let mut bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
+    let mut quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let mut tps = Vec::new();
+
+    for (idx, f) in batch.iter().enumerate() {
+        let l = f.bases.len_of(Axis(0));
+
+        bases
+            .i((idx as i64, ..l as i64, ..))
+            .copy_(&Tensor::try_from(&f.bases).unwrap());
+        quals
+            .i((idx as i64, ..l as i64, ..))
+            .copy_(&Tensor::try_from(&f.quals).unwrap());
+
+        tps.push(Tensor::of_slice(&f.target_positions));
+    }
+
+    let inputs = vec![
+        IValue::Tensor(bases),
+        IValue::Tensor(quals),
+        IValue::TensorList(tps),
+    ];
+
+    inputs
+}
+
+fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputData {
+    let mut logits = Vec::new();
+
+    for i in (0..data.windows.len()).step_by(BATCH_SIZE) {
+        let batch = &data.windows[i..(i + BATCH_SIZE).min(data.windows.len())];
+        let inputs = collate(batch, device);
+
+        let out = model
+            .forward_is(&inputs)
+            .map(|v| Tensor::try_from(v).unwrap())
+            .unwrap();
+
+        // Get number of target positions for each window
+        let lens: Vec<_> = match inputs[2] {
+            IValue::TensorList(ref tps) => tps.iter().map(|t| t.size1().unwrap()).collect(),
+            _ => unreachable!(),
+        };
+
+        let logits_batch: Vec<_> = out.split_with_sizes(&lens, 0);
+        logits.extend(logits_batch);
+    }
+
+    let outputs: Vec<_> = data
+        .windows
+        .into_iter()
+        .zip(logits.into_iter())
+        .map(|(f, t)| (f.wid, f.bases, t.try_into().unwrap()))
+        .collect();
+
+    OutputData::new(data.rid, outputs)
+}
+
+pub(crate) fn inference_worker<P: AsRef<Path>>(
+    model_path: P,
+    device: tch::Device,
+    input_channel: Receiver<InputData>,
+    output_channel: Sender<OutputData>,
+) {
+    let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
+    model.set_eval();
+
+    let _guard = tch::no_grad_guard();
+
+    loop {
+        let data = match input_channel.recv() {
+            Ok(data) => data,
+            Err(_) => break,
+        };
+
+        let output = inference(data, &model, device);
+        output_channel.send(output).unwrap();
+    }
+}
+
+pub(crate) fn prepare_examples(rid: u32, features: Vec<(u16, Array3<u8>)>) -> InputData {
+    let windows: Vec<_> = features
+        .into_iter()
+        .map(|(wid, mut feats)| {
+            // Transpose: [R, L, 2] -> [L, R, 2]
+            feats.swap_axes(1, 0);
+
+            // Get target positions: base == '*'
+            let tps: Vec<_> = feats
+                .slice(s![.., 0, 0])
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, b)| if *b != b'*' { Some(idx as i32) } else { None })
+                .collect();
+
+            // Transform bases (encode) and quals (normalize)
+            let bases = feats.index_axis(Axis(2), 0).mapv(|b| BASES_MAP[b as usize]);
+            let quals = feats
+                .index_axis(Axis(2), 1)
+                .mapv(|q| (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL));
+
+            Features::new(wid, bases, quals, tps)
+        })
+        .collect();
+
+    InputData::new(rid, windows)
+}
+
+fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8> {
+    let windows: HashMap<_, (_, _)> = data
+        .windows
+        .into_iter()
+        .map(|(w, b, l)| (w, (b, l)))
+        .collect();
+    let n_windows = ((read.seq.len() - 1) / window_size) + 1;
+
+    let mut corrected: Vec<u8> = Vec::new();
+    for wid in 0..n_windows {
+        if let Some((bases, logits)) = windows.get(&(wid as u16)) {
+            // Get target positions
+            let target = bases.slice(s![.., 0]);
+            let positions = target
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, b)| if *b != b'*' { Some(idx) } else { None })
+                .chain(Some(bases.len_of(Axis(0))).into_iter());
+
+            positions
+                .tuple_windows()
+                .zip(logits)
+                .for_each(|((s, e), l)| {
+                    if *l > 0. {
+                        // Correct position
+                        bases
+                            .slice(s![s..e, ..])
+                            .axis_iter(Axis(0))
+                            .for_each(|pos| {
+                                let mut counts: HashMap<u8, u8> = HashMap::new();
+                                pos.iter().for_each(|b| {
+                                    if *b != b'.' {
+                                        *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
+                                    }
+                                });
+
+                                let base = counts
+                                    .into_iter()
+                                    .max_by_key(|&(_, count)| count)
+                                    .unwrap()
+                                    .0;
+
+                                if base != b'*' {
+                                    corrected.push(base);
+                                }
+                            });
+                    } else {
+                        // Keep the original bases
+                        let start = wid * window_size + s;
+                        let end = wid * window_size + e;
+                        corrected.extend(&read.seq[start..end]);
+                    }
+                });
+        } else {
+            let start = wid * window_size;
+            let end = (start + window_size).min(read.seq.len());
+            corrected.extend(&read.seq[start..end]);
+        }
+    }
+
+    corrected
+}
+
+pub(crate) fn consensus_worker<P: AsRef<Path>>(
+    output_path: P,
+    reads: &[HAECRecord],
+    receiver: Receiver<OutputData>,
+    window_size: u32,
+) {
+    let file = File::create(output_path).unwrap();
+    let mut writer = BufWriter::new(file);
+
+    loop {
+        let output = match receiver.recv() {
+            Ok(output) => output,
+            Err(_) => break,
+        };
+
+        let rid = output.rid as usize;
+        let seq = consensus(output, &reads[rid], window_size as usize);
+
+        writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
+        writer.write(&seq).unwrap();
+        write!(&mut writer, "\n").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use approx::assert_abs_diff_eq;
+    use ndarray::{Array1, Array3};
+    use ndarray_npy::read_npy;
+
+    use super::{inference, prepare_examples};
+
+    #[test]
+    fn test() {
+        let _guard = tch::no_grad_guard();
+        let device = tch::Device::Cpu;
+        let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        // Load model
+        let mut model =
+            tch::CModule::load_on_device(&resources.join("resources/model.pt"), device).unwrap();
+        model.set_eval();
+
+        // Get files list
+        let mut files: Vec<_> = resources
+            .join("resources/example_feats")
+            .read_dir()
+            .unwrap()
+            .filter_map(|p| {
+                let p = p.unwrap().path();
+                match p.extension() {
+                    Some(ext) if ext == "npy" => Some(p),
+                    _ => None,
+                }
+            })
+            .collect();
+        files.sort();
+
+        // Create input data
+        let features = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let feats: Array3<u8> = read_npy(p).unwrap();
+                (i as u16, feats)
+            })
+            .collect();
+        let input_data = prepare_examples(0, features);
+
+        let output = inference(input_data, &model, device);
+        let predicted: Array1<f32> = output
+            .windows
+            .into_iter()
+            .flat_map(|(_, _, l)| l.into_iter())
+            .collect();
+
+        let target: Array1<f32> =
+            read_npy(resources.join("resources/example_feats_tch_out.npy")).unwrap();
+
+        assert_abs_diff_eq!(predicted, target);
+    }
+}

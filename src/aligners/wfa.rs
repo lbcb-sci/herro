@@ -1,193 +1,53 @@
+use std::ptr::NonNull;
+
 use itertools::Itertools;
 
 use super::{AlignmentResult, CigarOp};
+use wfa2_sys as wfa;
 
-#[allow(non_upper_case_globals)]
-#[allow(non_snake_case)]
-#[allow(non_camel_case_types)]
-#[allow(unused)]
-mod wfa {
-    include!(concat!(env!("OUT_DIR"), "/bindings_wfa.rs"));
-}
+const MISMATCH_COST: i32 = 5;
+const GAP_OPEN1_COST: i32 = 6;
+const GAP_EXT1_COST: i32 = 2;
+const GAP_OPEN2_COST: i32 = 24;
+const GAP_EXT2_COST: i32 = 1;
+
+const MIN_WAVEFRONT_LENGTH: i32 = 10;
+const MAX_DISTANCE_THRESHOLD: i32 = 200;
+const STEPS_BETWEEN_CUTOFFS: i32 = 1;
 
 const MIN_END_MATCHES: u8 = 8;
 
-pub struct WFAAlignerBuilder {
-    attributes: wfa::wavefront_aligner_attr_t,
-}
-
-impl WFAAlignerBuilder {
-    pub fn new() -> Self {
-        unsafe {
-            WFAAlignerBuilder {
-                attributes: wfa::wavefront_aligner_attr_default,
-            }
-        }
-    }
-
-    pub fn set_distance_metric(&mut self, metric: WFADistanceMetric) -> &mut Self {
-        match metric {
-            WFADistanceMetric::Indel => {
-                self.attributes.distance_metric = wfa::distance_metric_t_indel;
-            }
-            WFADistanceMetric::Edit => {
-                self.attributes.distance_metric = wfa::distance_metric_t_edit;
-            }
-            WFADistanceMetric::GapLinear {
-                match_,
-                mismatch,
-                indel,
-            } => {
-                self.attributes.distance_metric = wfa::distance_metric_t_gap_linear;
-                self.attributes.linear_penalties.match_ = match_;
-                self.attributes.linear_penalties.mismatch = mismatch;
-                self.attributes.linear_penalties.indel = indel;
-            }
-            WFADistanceMetric::GapAffine {
-                match_,
-                mismatch,
-                gap_opening,
-                gap_extension,
-            } => {
-                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine;
-                self.attributes.affine_penalties.match_ = match_;
-                self.attributes.affine_penalties.mismatch = mismatch;
-                self.attributes.affine_penalties.gap_opening = gap_opening;
-                self.attributes.affine_penalties.gap_extension = gap_extension;
-            }
-            WFADistanceMetric::GapAffine2p {
-                match_,
-                mismatch,
-                gap_opening1,
-                gap_extension1,
-                gap_opening2,
-                gap_extension2,
-            } => {
-                self.attributes.distance_metric = wfa::distance_metric_t_gap_affine_2p;
-                self.attributes.affine2p_penalties.match_ = match_;
-                self.attributes.affine2p_penalties.mismatch = mismatch;
-                self.attributes.affine2p_penalties.gap_opening1 = gap_opening1;
-                self.attributes.affine2p_penalties.gap_extension1 = gap_extension1;
-                self.attributes.affine2p_penalties.gap_opening2 = gap_opening2;
-                self.attributes.affine2p_penalties.gap_extension2 = gap_extension2;
-            }
-        }
-        self
-    }
-
-    pub fn set_alignment_scope(&mut self, scope: WFAAlignmentScope) -> &mut Self {
-        self.attributes.alignment_scope = scope as u32;
-        self
-    }
-
-    pub fn set_alignment_span(&mut self, span: WFAAlignmentSpan) -> &mut Self {
-        match span {
-            WFAAlignmentSpan::EndToEnd => {
-                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
-            }
-            WFAAlignmentSpan::EndsFree {
-                pattern_begin_free,
-                pattern_end_free,
-                text_begin_free,
-                text_end_free,
-            } => {
-                self.attributes.alignment_form.span = wfa::alignment_span_t_alignment_endsfree;
-                self.attributes.alignment_form.pattern_begin_free = pattern_begin_free;
-                self.attributes.alignment_form.pattern_end_free = pattern_end_free;
-                self.attributes.alignment_form.text_begin_free = text_begin_free;
-                self.attributes.alignment_form.text_end_free = text_end_free;
-            }
-        }
-        self
-    }
-
-    pub fn set_memory_mode(&mut self, mode: WFAMemoryMode) -> &Self {
-        self.attributes.memory_mode = mode as u32;
-        self
-    }
-
-    pub fn build(mut self) -> WFAAligner {
-        unsafe {
-            //self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_none;
-            self.attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_wfadaptive;
-            self.attributes.heuristic.min_wavefront_length = 10;
-            self.attributes.heuristic.max_distance_threshold = 200;
-            self.attributes.heuristic.steps_between_cutoffs = 1;
-
-            let aligner = wfa::wavefront_aligner_new(&mut self.attributes); // TODO Handle null possibility
-            WFAAligner { aligner }
-        }
-    }
-}
-
-pub enum WFADistanceMetric {
-    Indel,
-    Edit,
-    GapLinear {
-        match_: i32,
-        mismatch: i32,
-        indel: i32,
-    },
-    GapAffine {
-        match_: i32,
-        mismatch: i32,
-        gap_opening: i32,
-        gap_extension: i32,
-    },
-    GapAffine2p {
-        match_: i32,
-        mismatch: i32,
-        gap_opening1: i32,
-        gap_extension1: i32,
-        gap_opening2: i32,
-        gap_extension2: i32,
-    },
-}
-
-#[repr(u32)]
-pub enum WFAAlignmentScope {
-    Score = wfa::alignment_scope_t_compute_score,
-    Alignment = wfa::alignment_scope_t_compute_alignment,
-}
-
-pub enum WFAAlignmentSpan {
-    EndToEnd,
-    EndsFree {
-        pattern_begin_free: i32,
-        pattern_end_free: i32,
-        text_begin_free: i32,
-        text_end_free: i32,
-    },
-}
-
-#[repr(u32)]
-pub enum WFAMemoryMode {
-    HIGH = wfa::wavefront_memory_t_wavefront_memory_high,
-    MED = wfa::wavefront_memory_t_wavefront_memory_med,
-    LOW = wfa::wavefront_memory_t_wavefront_memory_low,
-    ULTRALOW = wfa::wavefront_memory_t_wavefront_memory_ultralow,
-}
 pub struct WFAAligner {
-    aligner: *mut wfa::_wavefront_aligner_t,
+    aligner: NonNull<wfa::_wavefront_aligner_t>,
 }
 
 impl WFAAligner {
-    pub fn default() -> Self {
-        let mut builder = WFAAlignerBuilder::new();
+    pub fn new() -> Self {
+        unsafe {
+            let mut attributes = wfa::wavefront_aligner_attr_default;
 
-        //BiWFA
-        builder.set_memory_mode(WFAMemoryMode::ULTRALOW);
+            attributes.distance_metric = wfa::distance_metric_t_gap_affine_2p;
+            attributes.affine2p_penalties.mismatch = MISMATCH_COST;
+            attributes.affine2p_penalties.gap_opening1 = GAP_OPEN1_COST;
+            attributes.affine2p_penalties.gap_extension1 = GAP_EXT1_COST;
+            attributes.affine2p_penalties.gap_opening2 = GAP_OPEN2_COST;
+            attributes.affine2p_penalties.gap_extension2 = GAP_EXT2_COST;
 
-        builder.set_distance_metric(WFADistanceMetric::GapAffine2p {
-            match_: 0,
-            mismatch: 5,
-            gap_opening1: 6,
-            gap_extension1: 2,
-            gap_opening2: 24,
-            gap_extension2: 1,
-        });
+            attributes.alignment_scope = wfa::alignment_scope_t_compute_alignment;
 
-        builder.build()
+            attributes.alignment_form.span = wfa::alignment_span_t_alignment_end2end;
+
+            attributes.memory_mode = wfa::wavefront_memory_t_wavefront_memory_ultralow;
+
+            attributes.heuristic.strategy = wfa::wf_heuristic_strategy_wf_heuristic_wfadaptive;
+            attributes.heuristic.min_wavefront_length = MIN_WAVEFRONT_LENGTH;
+            attributes.heuristic.max_distance_threshold = MAX_DISTANCE_THRESHOLD;
+            attributes.heuristic.steps_between_cutoffs = STEPS_BETWEEN_CUTOFFS;
+
+            let aligner = wfa::wavefront_aligner_new(&mut attributes);
+            let aligner = NonNull::new(aligner).expect("Cannot create WFA aligner.");
+            WFAAligner { aligner }
+        }
     }
 
     pub fn align(&self, query: &[u8], target: &[u8]) -> Option<AlignmentResult> {
@@ -196,7 +56,7 @@ impl WFAAligner {
             let t_seq: &[i8] = std::mem::transmute(target);
 
             let status = wfa::wavefront_align(
-                self.aligner,
+                self.aligner.as_ptr(),
                 t_seq.as_ptr(),
                 target.len() as i32,
                 q_seq.as_ptr(),
@@ -204,11 +64,11 @@ impl WFAAligner {
             );
 
             if status == 0 {
-                let cigar_start = (*(*self.aligner).cigar)
+                let cigar_start = (*(*self.aligner.as_ptr()).cigar)
                     .operations
-                    .offset((*(*self.aligner).cigar).begin_offset as isize);
-                let size =
-                    (*(*self.aligner).cigar).end_offset - (*(*self.aligner).cigar).begin_offset;
+                    .offset((*(*self.aligner.as_ptr()).cigar).begin_offset as isize);
+                let size = (*(*self.aligner.as_ptr()).cigar).end_offset
+                    - (*(*self.aligner.as_ptr()).cigar).begin_offset;
 
                 let cigar = std::slice::from_raw_parts(cigar_start as *mut u8, size as usize);
 
@@ -317,7 +177,7 @@ fn get_alignment_results(cigar: &[u8]) -> Option<AlignmentResult> {
 
 impl Drop for WFAAligner {
     fn drop(&mut self) {
-        unsafe { wfa::wavefront_aligner_delete(self.aligner) }
+        unsafe { wfa::wavefront_aligner_delete(self.aligner.as_ptr()) }
     }
 }
 
@@ -349,7 +209,7 @@ mod tests {
         let target = "AAAACTCTTTCCTGA";
         let query = "AAAAACCTTCTGA";
 
-        let aligner = WFAAligner::default();
+        let aligner = WFAAligner::new();
         let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
 
         println!("{}", cigar_to_string(&cigar.cigar));
@@ -360,7 +220,7 @@ mod tests {
         let target = "TCAGAAGGTTTTT";
         let query = "TCAGGAAAGAGTTTT";
 
-        let aligner = WFAAligner::default();
+        let aligner = WFAAligner::new();
         let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
 
         println!("{}", cigar_to_string(&cigar.cigar));

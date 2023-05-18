@@ -13,6 +13,8 @@ struct Cli {
     threads: usize,
     #[arg(short = 'o', default_value = "features")]
     output: String,
+    #[arg(short = 'm')]
+    model: String,
 }
 
 fn main() {
@@ -21,6 +23,7 @@ fn main() {
     error_correction(
         &cli.reads_path,
         &cli.paf_path,
+        &cli.model,
         &cli.output,
         cli.threads,
         cli.window_size,

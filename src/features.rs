@@ -5,6 +5,7 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 
+use crossbeam_channel::{bounded, Sender};
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
@@ -12,12 +13,15 @@ use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 
-use crate::aligners::{fix_cigar, get_proper_cigar, reverse_complement, CigarOp};
+use crate::aligners::{
+    calculate_accuracy, fix_cigar, get_proper_cigar, reverse_complement, CigarOp,
+};
 use crate::haec_io::HAECRecord;
+use crate::inference::{prepare_examples, InputData};
 use crate::overlaps::{self, Overlap, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
-const TOP_K: usize = 30;
+pub(crate) const TOP_K: usize = 30;
 
 lazy_static! {
     static ref BASE_COMP: HashMap<u8, u8> = {
@@ -276,30 +280,27 @@ fn get_features_for_window(
     features
 }
 
-fn overlap_window_filter(accuracy: f32, cigar: &[CigarOp]) -> bool {
+fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
     let long_indel = cigar.iter().any(|op| match op {
         CigarOp::Insertion(l) | CigarOp::Deletion(l) if *l >= 30 => true,
         _ => false,
     });
 
-    accuracy >= 0.80 && !long_indel
+    //accuracy >= 0.80 && !long_indel
+    calculate_accuracy(cigar) >= 0.85 && !long_indel
 }
 
-pub fn extract_features<P: AsRef<Path>>(
+pub(crate) fn extract_features(
     reads: &[HAECRecord],
     overlaps: &[Overlap],
     window_size: u32,
-    output_path: P,
-) where
-    P: AsRef<Path> + Send + Sync,
-{
+    sender: Sender<InputData>,
+) {
     let read_to_overlaps = get_reads_to_overlaps(overlaps);
-
-    eprintln!("Extracting features...");
     read_to_overlaps
         .par_iter()
         .progress_count(read_to_overlaps.len() as u64)
-        .for_each(|(rid, ovlps)| {
+        .for_each_with(sender, |sender, (rid, ovlps)| {
             let read = &reads[*rid as usize];
 
             // Get overlaps for windows
@@ -346,9 +347,10 @@ pub fn extract_features<P: AsRef<Path>>(
             }
 
             // Create directory for the read
-            let output_path = output_path.as_ref().join(&read.id);
-            create_dir_all(&output_path).expect("Cannot create directory");
+            //let output_path = output_path.as_ref().join(&read.id);
+            //create_dir_all(&output_path).expect("Cannot create directory");
 
+            let mut features = Vec::new();
             for i in 0..n_windows {
                 if windows[i].len() == 0 {
                     continue;
@@ -367,14 +369,19 @@ pub fn extract_features<P: AsRef<Path>>(
                     // TODO: Handle CIGAR offsets
                     let cigar = ovlps_cigar_map.get(&qid).unwrap();
                     let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
-                    overlap_window_filter(
-                        ow.overlap.accuracy.unwrap(),
-                        &cigar[ow.cigar_start_idx..cigar_end],
-                    )
+                    overlap_window_filter(&cigar[ow.cigar_start_idx..cigar_end])
                 });
 
                 // Sort window to take TOP-K
-                windows[i].sort_by_key(|ow| OrderedFloat(-ow.overlap.accuracy.unwrap()));
+                windows[i].sort_by_key(|ow| {
+                    let cigar = ovlps_cigar_map
+                        .get(&ow.overlap.return_other_id(*rid))
+                        .unwrap();
+
+                    let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
+                    let acc = calculate_accuracy(&cigar[ow.cigar_start_idx..cigar_end]);
+                    OrderedFloat(-acc)
+                });
 
                 let max_ins = get_max_ins_for_window(
                     &windows[i],
@@ -394,14 +401,18 @@ pub fn extract_features<P: AsRef<Path>>(
                     win_len,
                 );
 
-                let qids: Vec<&str> = windows[i]
-                    .iter()
-                    .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
-                    .collect();
+                /*let qids: Vec<&str> = windows[i]
+                .iter()
+                .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
+                .collect();*/
+                features.push((i as u16, window));
 
                 //TODO handle Result
-                output_features(&output_path, i, &qids, &window);
+                //output_features(&output_path, i, &qids, &window);
             }
+
+            let features = prepare_examples(*rid, features);
+            sender.send(features).unwrap();
         });
 }
 

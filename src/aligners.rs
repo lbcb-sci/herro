@@ -91,15 +91,15 @@ pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
     seq.iter().rev().map(|c| complement(*c)).collect()
 }
 
-pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
+pub fn align_overlaps(overlaps: Vec<Overlap>, reads: &[HAECRecord]) -> Vec<Overlap> {
     let n_overlaps = overlaps.len();
     let aligners = Arc::new(ThreadLocal::new());
 
     overlaps
-        .par_iter_mut()
+        .into_par_iter()
         .progress_count(n_overlaps as u64)
-        .for_each_with(aligners, |aligners, o| {
-            let aligner = aligners.get_or(|| wfa::WFAAligner::default());
+        .filter_map(|mut o| {
+            let aligner = aligners.get_or(|| wfa::WFAAligner::new());
 
             let query = &reads[o.qid as usize].seq[o.qstart as usize..o.qend as usize];
             let query = match o.strand {
@@ -111,7 +111,7 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
 
             let align_result = aligner.align(&query, target);
             if align_result.is_none() {
-                return;
+                return None;
             }
 
             let align_result = align_result.unwrap();
@@ -131,11 +131,12 @@ pub fn align_overlaps(overlaps: &mut [Overlap], reads: &[HAECRecord]) {
                 }
             }
 
-            o.accuracy = Some(calculate_accuracy(o.cigar.as_ref().unwrap()));
-        });
+            Some(o)
+        })
+        .collect()
 }
 
-fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
+pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {

@@ -40,7 +40,6 @@ pub struct Overlap {
     pub tstart: u32,
     pub tend: u32,
     pub cigar: Option<Vec<CigarOp>>,
-    pub accuracy: Option<f32>,
 }
 
 impl Overlap {
@@ -66,7 +65,6 @@ impl Overlap {
             tstart,
             tend,
             cigar: None,
-            accuracy: None,
         }
     }
 
@@ -266,6 +264,7 @@ pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
     overlaps
 }
 
+#[allow(dead_code)]
 pub(crate) fn print_overlaps(overlaps: &[Overlap], reads: &[HAECRecord]) {
     for overlap in overlaps {
         println!(
