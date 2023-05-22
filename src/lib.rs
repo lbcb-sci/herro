@@ -46,11 +46,12 @@ pub fn error_correction<T, U, V>(
     let (feats_sender, feats_receiver) = bounded(1000);
     let (pred_sender, pred_receiver) = bounded(1000);
 
-    extract_features(&reads, &overlaps, window_size, feats_sender);
+    //extract_features(&reads, &overlaps, window_size, feats_sender);
 
     thread::scope(|s| {
-        s.spawn(|| inference_worker(model_path, tch::Device::Cpu, feats_receiver, pred_sender));
-
+        s.spawn(|| inference_worker(model_path, tch::Device::Cuda(0), feats_receiver, pred_sender));
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
+
+        extract_features(&reads, &overlaps, window_size, feats_sender);
     });
 }

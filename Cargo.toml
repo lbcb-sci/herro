@@ -25,4 +25,4 @@ crossbeam-channel = "~0.5.8"
 
 [dev-dependencies]
 approx = "~0.5.1"
-ndarray = {features = ["approx-0_5"]}
+ndarray = {version = "~0.15.6", features = ["approx-0_5"]}

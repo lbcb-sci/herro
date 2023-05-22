@@ -14,7 +14,7 @@ use tch::{CModule, IValue, IndexOp, Tensor};
 
 use crate::haec_io::HAECRecord;
 
-const BATCH_SIZE: usize = 8;
+const BATCH_SIZE: usize = 16;
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 73.;
@@ -37,16 +37,16 @@ lazy_static! {
     };
     static ref BASES_UPPER: [u8; 256] = {
         let mut map = [0; 256];
-        map[b'A' as usize] = b'A';
-        map[b'C' as usize] = b'C';
-        map[b'G' as usize] = b'G';
-        map[b'T' as usize] = b'T';
-        map[b'*' as usize] = b'*';
-        map[b'a' as usize] = b'A';
-        map[b'c' as usize] = b'C';
-        map[b'g' as usize] = b'G';
-        map[b't' as usize] = b'T';
-        map[b'#' as usize] = b'*';
+        map[0] = b'A';
+        map[1] = b'C';
+        map[2] = b'G';
+        map[3] = b'T';
+        map[4] = b'*';
+        map[5] = b'A';
+        map[6] = b'C';
+        map[7] = b'G';
+        map[8] = b'T';
+        map[9] = b'*';
         map
     };
 }
@@ -166,6 +166,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     input_channel: Receiver<InputData>,
     output_channel: Sender<OutputData>,
 ) {
+    println!("In inference worker");
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
 
@@ -233,26 +234,38 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
                 .tuple_windows()
                 .zip(logits)
                 .for_each(|((s, e), l)| {
-                    if *l > 0. {
-                        // Correct position
+                    if *l <= 0. {
+                        // Non-informative -> correct position
                         bases
                             .slice(s![s..e, ..])
                             .axis_iter(Axis(0))
                             .for_each(|pos| {
                                 let mut counts: HashMap<u8, u8> = HashMap::new();
                                 pos.iter().for_each(|b| {
-                                    if *b != b'.' {
+                                    if *b != BASES_MAP[b'.' as usize] {
                                         *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
                                     }
                                 });
 
-                                let base = counts
-                                    .into_iter()
-                                    .max_by_key(|&(_, count)| count)
-                                    .unwrap()
-                                    .0;
+                                let mut counts: Vec<_> = counts.into_iter().collect();
+                                counts.sort_by_key(|(_, c)| -(*c as i16));
+
+                                let tgt_base = read.seq[wid * window_size + s];
+                                if counts[0].1 == counts[1].1
+                                    && (counts[0].0 == tgt_base || counts[1].0 == tgt_base)
+                                {
+                                    corrected.push(tgt_base);
+                                    return;
+                                }
+
+                                /*let base =
+                                 *counts.iter().max_by_key(|&(_, count)| count).unwrap().0;*/
+                                let base = counts[0].0;
 
                                 if base != b'*' {
+                                    if base == b'\0' {
+                                        println!("{:?}", "Kurac");
+                                    }
                                     corrected.push(base);
                                 }
                             });
@@ -279,6 +292,7 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
     receiver: Receiver<OutputData>,
     window_size: u32,
 ) {
+    println!("In consensus worker");
     let file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(file);
 
