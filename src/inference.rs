@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::write,
     fs::File,
     io::{BufWriter, Write},
@@ -102,8 +102,8 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
         batch[0].bases.len_of(Axis(1)) as i64,
     ]; // [B, L, R]
 
-    let mut bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
-    let mut quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
+    let quals = Tensor::zeros(&size, (tch::Kind::Float, device));
     let mut tps = Vec::new();
 
     for (idx, f) in batch.iter().enumerate() {
@@ -224,58 +224,69 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
         if let Some((bases, logits)) = windows.get(&(wid as u16)) {
             // Get target positions
             let target = bases.slice(s![.., 0]);
-            let positions = target
+            let positions: Vec<_> = target
                 .iter()
                 .enumerate()
-                .filter_map(|(idx, b)| if *b != b'*' { Some(idx) } else { None })
-                .chain(Some(bases.len_of(Axis(0))).into_iter());
+                .filter_map(|(idx, b)| {
+                    if BASES_UPPER[*b as usize] != b'*' {
+                        Some(idx)
+                    } else {
+                        None
+                    }
+                })
+                .chain(Some(bases.len_of(Axis(0))).into_iter())
+                .collect();
 
-            positions
-                .tuple_windows()
-                .zip(logits)
-                .for_each(|((s, e), l)| {
-                    if *l <= 0. {
-                        // Non-informative -> correct position
-                        bases
-                            .slice(s![s..e, ..])
-                            .axis_iter(Axis(0))
-                            .for_each(|pos| {
-                                let mut counts: HashMap<u8, u8> = HashMap::new();
-                                pos.iter().for_each(|b| {
-                                    if *b != BASES_MAP[b'.' as usize] {
-                                        *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
-                                    }
-                                });
-
-                                let mut counts: Vec<_> = counts.into_iter().collect();
-                                counts.sort_by_key(|(_, c)| -(*c as i16));
-
-                                let tgt_base = read.seq[wid * window_size + s];
-                                if counts[0].1 == counts[1].1
-                                    && (counts[0].0 == tgt_base || counts[1].0 == tgt_base)
-                                {
-                                    corrected.push(tgt_base);
-                                    return;
-                                }
-
-                                /*let base =
-                                 *counts.iter().max_by_key(|&(_, count)| count).unwrap().0;*/
-                                let base = counts[0].0;
-
-                                if base != b'*' {
-                                    if base == b'\0' {
-                                        println!("{:?}", "Kurac");
-                                    }
-                                    corrected.push(base);
+            (0..positions.len() - 1).zip(logits).for_each(|(i, l)| {
+                if *l <= 0. {
+                    // Non-informative -> correct position
+                    bases
+                        .slice(s![positions[i]..positions[i + 1], ..])
+                        .axis_iter(Axis(0))
+                        .enumerate()
+                        .for_each(|(pos, pos_bases)| {
+                            let mut counts: HashMap<u8, u8> = HashMap::new();
+                            pos_bases.iter().for_each(|b| {
+                                if *b != BASES_MAP[b'.' as usize] {
+                                    *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
                                 }
                             });
-                    } else {
-                        // Keep the original bases
-                        let start = wid * window_size + s;
-                        let end = wid * window_size + e;
-                        corrected.extend(&read.seq[start..end]);
-                    }
-                });
+
+                            let max_occ = counts.iter().map(|(_, c)| *c).max().unwrap();
+                            let most_freq_bases: HashSet<_> = counts
+                                .into_iter()
+                                .filter_map(|(b, c)| if c == max_occ { Some(b) } else { None })
+                                .collect();
+
+                            let tgt_base = BASES_UPPER[target[positions[i] + pos] as usize];
+
+                            if most_freq_bases.len() > 1 {
+                                let base = if most_freq_bases.contains(&tgt_base) {
+                                    tgt_base
+                                } else {
+                                    most_freq_bases.into_iter().min().unwrap()
+                                };
+
+                                if base != b'*' {
+                                    corrected.push(base);
+                                }
+
+                                return;
+                            }
+
+                            /*let base =
+                             *counts.iter().max_by_key(|&(_, count)| count).unwrap().0;*/
+                            let base = most_freq_bases.into_iter().next().unwrap();
+
+                            if base != b'*' {
+                                corrected.push(base);
+                            }
+                        });
+                } else {
+                    // Keep the original base
+                    corrected.push(read.seq[wid * window_size + i]);
+                }
+            });
         } else {
             let start = wid * window_size;
             let end = (start + window_size).min(read.seq.len());
@@ -369,5 +380,52 @@ mod tests {
             read_npy(resources.join("resources/example_feats_tch_out.npy")).unwrap();
 
         assert_abs_diff_eq!(predicted, target);
+    }
+
+    #[test]
+    fn test2() {
+        let _guard = tch::no_grad_guard();
+        let device = tch::Device::Cpu;
+        let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        // Load model
+        let mut model =
+            tch::CModule::load_on_device(&resources.join("resources/model.pt"), device).unwrap();
+        model.set_eval();
+
+        // Get files list
+        let mut files: Vec<_> =
+            PathBuf::from("/scratch/users/astar/gis/stanojev/haec/chr19_py_inference/test_rs")
+                .read_dir()
+                .unwrap()
+                .filter_map(|p| {
+                    let p = p.unwrap().path();
+                    match p.extension() {
+                        Some(ext) if ext == "npy" => Some(p),
+                        _ => None,
+                    }
+                })
+                .collect();
+        files.sort();
+
+        // Create input data
+        let features = files
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let feats: Array3<u8> = read_npy(p).unwrap();
+                (i as u16, feats)
+            })
+            .collect();
+        let input_data = prepare_examples(0, features);
+
+        let output = inference(input_data, &model, device);
+        let predicted: Array1<f32> = output
+            .windows
+            .into_iter()
+            .flat_map(|(_, _, l)| l.into_iter())
+            .collect();
+
+        println!("{:?}", &predicted.to_vec()[4056 - 5..4056 + 5]);
     }
 }
