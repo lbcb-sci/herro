@@ -1,13 +1,11 @@
 use std::{
     collections::{HashMap, HashSet},
-    fmt::write,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
 };
 
 use crossbeam_channel::{Receiver, Sender};
-use itertools::Itertools;
 use lazy_static::lazy_static;
 use ndarray::{s, Array2, Array3, Axis};
 use tch::{CModule, IValue, IndexOp, Tensor};
@@ -116,7 +114,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.quals).unwrap());
 
-        tps.push(Tensor::of_slice(&f.target_positions));
+        tps.push(Tensor::from_slice(&f.target_positions));
     }
 
     let inputs = vec![
@@ -218,6 +216,7 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
         .collect();
     let n_windows = ((read.seq.len() - 1) / window_size) + 1;
 
+    let uncorrected = read.seq.get_sequence();
     let mut corrected: Vec<u8> = Vec::new();
     for wid in 0..n_windows {
         if let Some((bases, logits)) = windows.get(&(wid as u16)) {
@@ -283,13 +282,13 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
                         });
                 } else {
                     // Keep the original base
-                    corrected.push(read.seq[wid * window_size + i]);
+                    corrected.push(uncorrected[wid * window_size + i]);
                 }
             });
         } else {
             let start = wid * window_size;
             let end = (start + window_size).min(read.seq.len());
-            corrected.extend(&read.seq[start..end]);
+            corrected.extend(&uncorrected[start..end]);
         }
     }
 

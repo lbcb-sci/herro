@@ -1,11 +1,10 @@
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 
-use crossbeam_channel::{bounded, Sender};
+use crossbeam_channel::Sender;
 use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
@@ -109,17 +108,26 @@ fn get_features_for_ol_window(
 
     let mut query_iter: Box<dyn DoubleEndedIterator<Item = (u8, u8)>> = match window.overlap.strand
     {
-        Strand::Forward => Box::new(
-            query
-                .subseq_iter((qstart + window.qstart) as usize..qend as usize)
-                .map(|(b, q)| (*b, *q)),
-        ),
-        Strand::Reverse => Box::new(
-            query
-                .subseq_iter(qstart as usize..(qend - window.qstart) as usize)
-                .rev()
-                .map(|(b, q)| (*BASE_COMP.get(&b).unwrap(), *q)),
-        ),
+        Strand::Forward => {
+            let range = (qstart + window.qstart) as usize..qend as usize;
+            let bases = query.seq.get_subsequence(range.clone());
+            let quals = &query.qual[range];
+
+            Box::new(bases.into_iter().zip(quals).map(|(b, q)| (b, *q)))
+        }
+        Strand::Reverse => {
+            let range = qstart as usize..(qend - window.qstart) as usize;
+            let bases = query.seq.get_subsequence(range.clone());
+            let quals = &query.qual[range];
+
+            Box::new(
+                bases
+                    .into_iter()
+                    .zip(quals)
+                    .rev()
+                    .map(|(b, q)| (*BASE_COMP.get(&b).unwrap(), *q)),
+            )
+        }
     };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
@@ -227,7 +235,9 @@ fn write_target_for_window(
     features.column_mut(0).fill(b'*'); // Fill like forward
 
     let mut tpos = 0;
-    target.seq[tstart..tstart + window_length]
+    target
+        .seq
+        .get_subsequence(tstart..tstart + window_length)
         .iter()
         .zip(target.qual[tstart..tstart + window_length].iter())
         .enumerate()
@@ -324,13 +334,20 @@ pub(crate) fn extract_features(
                     (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
                 };
 
-                let target = &reads[*rid as usize].seq[tstart as usize..tend as usize];
-                let query = &reads[qid as usize].seq[qstart as usize..qend as usize];
-                let query = match overlap.strand {
-                    overlaps::Strand::Forward => Cow::Borrowed(query),
-                    overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
+                let target = reads[*rid as usize]
+                    .seq
+                    .get_subsequence(tstart as usize..tend as usize);
+                let query = if overlaps::Strand::Forward == overlap.strand {
+                    reads[qid as usize]
+                        .seq
+                        .get_subsequence(qstart as usize..qend as usize)
+                } else {
+                    let q = reads[qid as usize]
+                        .seq
+                        .get_subsequence(qstart as usize..qend as usize);
+                    reverse_complement(&q)
                 };
-                let (tshift, qshift) = fix_cigar(&mut cigar, target, &query);
+                let (tshift, qshift) = fix_cigar(&mut cigar, &target, &query);
 
                 //Extract windows
                 extract_windows(

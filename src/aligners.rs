@@ -1,4 +1,4 @@
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
 use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
@@ -101,15 +101,22 @@ pub fn align_overlaps(overlaps: Vec<Overlap>, reads: &[HAECRecord]) -> Vec<Overl
         .filter_map(|mut o| {
             let aligner = aligners.get_or(|| wfa::WFAAligner::new());
 
-            let query = &reads[o.qid as usize].seq[o.qstart as usize..o.qend as usize];
-            let query = match o.strand {
-                overlaps::Strand::Forward => Cow::Borrowed(query),
-                overlaps::Strand::Reverse => Cow::Owned(reverse_complement(query)),
+            let query = if overlaps::Strand::Forward == o.strand {
+                let query = reads[o.qid as usize]
+                    .seq
+                    .get_subsequence(o.qstart as usize..o.qend as usize);
+                reverse_complement(&query)
+            } else {
+                reads[o.qid as usize]
+                    .seq
+                    .get_subsequence(o.qstart as usize..o.qend as usize)
             };
 
-            let target = &reads[o.tid as usize].seq[o.tstart as usize..o.tend as usize];
+            let target = reads[o.tid as usize]
+                .seq
+                .get_subsequence(o.tstart as usize..o.tend as usize);
 
-            let align_result = aligner.align(&query, target);
+            let align_result = aligner.align(&query, &target);
             if align_result.is_none() {
                 return None;
             }
