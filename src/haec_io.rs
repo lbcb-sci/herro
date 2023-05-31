@@ -23,11 +23,11 @@ pub struct HAECRecord {
 }
 
 impl HAECRecord {
-    fn new(id: String, description: Option<String>, seq: Vec<u8>, qual: Vec<u8>) -> Self {
+    fn new(id: String, description: Option<String>, seq: HAECSeq, qual: Vec<u8>) -> Self {
         HAECRecord {
             id,
             description,
-            seq: HAECSeq::from(&*seq),
+            seq,
             qual,
         }
     }
@@ -49,7 +49,7 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
         let id = split.next().expect("Cannot be empty").to_owned();
         let description = split.next().map(|s| s.to_owned());
 
-        let seq = record.seq().into_owned();
+        let seq = HAECSeq::from(&*record.seq());
         let qual = record
             .qual()
             .expect("Qualities should be present.")

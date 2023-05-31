@@ -1,3 +1,5 @@
+use std::num::ParseIntError;
+
 use clap::Parser;
 
 use ont_haec_rs::error_correction;
@@ -11,10 +13,16 @@ struct Cli {
     window_size: u32,
     #[arg(short = 't', default_value = "1")]
     threads: usize,
+    #[arg(short = 'd', value_parser = devices_parser, default_value = "0")]
+    devices: Vec<usize>,
     #[arg(short = 'o', default_value = "features")]
     output: String,
     #[arg(short = 'm')]
     model: String,
+}
+
+fn devices_parser(s: &str) -> Result<Vec<usize>, ParseIntError> {
+    s.split(',').map(|n| n.parse()).collect()
 }
 
 fn main() {
@@ -27,5 +35,6 @@ fn main() {
         &cli.output,
         cli.threads,
         cli.window_size,
+        &cli.devices,
     );
 }

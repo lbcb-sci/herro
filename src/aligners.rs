@@ -1,4 +1,4 @@
-use indicatif::{ParallelProgressIterator, ProgressIterator};
+use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
 use rayon::prelude::*;
 use std::{cell::RefCell, sync::Arc};

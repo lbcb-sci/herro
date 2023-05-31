@@ -1,6 +1,8 @@
-use std::fmt::{self};
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+
+use std::fmt;
 use std::{
-    collections::{HashMap, HashSet},
     fs::File,
     io::{BufRead, BufReader},
     path::Path,
@@ -97,15 +99,17 @@ impl Eq for Overlap {}
 
 pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Vec<Overlap> {
     let file = File::open(path).expect("Cannot open overlap file.");
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
 
+    let mut buffer = String::new();
     let mut overlaps = Vec::new();
-    let mut ratio_removed = 0u32;
-    let mut processed = HashSet::new();
-    for line in reader.lines() {
-        let line = line.unwrap();
+    let mut processed = HashSet::default();
+    while let Ok(len) = reader.read_line(&mut buffer) {
+        if len == 0 {
+            break;
+        }
 
-        let mut data = line.split("\t");
+        let mut data = buffer[..len - 1].split("\t");
 
         let qid = match name_to_id.get(data.next().unwrap()) {
             Some(qid) => *qid,
@@ -129,35 +133,32 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
         let tstart: u32 = data.next().unwrap().parse().unwrap();
         let tend: u32 = data.next().unwrap().parse().unwrap();
 
+        buffer.clear();
         if tid == qid {
             // Cannot have self-overlaps
             continue;
         }
 
         if processed.contains(&(qid, tid)) {
-            continue; // We assume the first one is the best one
+            continue; // We assume the first overlap between two reads is the best one
         }
         processed.insert((qid, tid));
 
-        let ratio = (tend - tstart) as f64 / (qend - qstart) as f64;
-        if ratio < 0.9 || ratio > 1.111 {
-            // Filter based on length ratio
-            ratio_removed += 1;
-            continue;
+        if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
+            let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
+            overlaps.push(overlap);
         }
-
-        let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
-        overlaps.push(overlap);
     }
 
-    eprintln!("Removed overlaps due to ratio {}", ratio_removed);
+    overlaps.shrink_to_fit();
+
     eprintln!("Total overlaps {}", overlaps.len());
     overlaps
 }
 
 #[allow(dead_code)]
 fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
-    let mut ovlps_for_pairs = HashMap::new();
+    let mut ovlps_for_pairs = HashMap::default();
     for i in 0..overlaps.len() {
         ovlps_for_pairs
             .entry((overlaps[i].qid, overlaps[i].tid))
@@ -165,7 +166,7 @@ fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
             .push(i);
     }
 
-    let mut kept_overlap_ids = HashSet::new();
+    let mut kept_overlap_ids = HashSet::default();
     for ((_, _), ovlps) in ovlps_for_pairs {
         let kept_id = match ovlps.len() {
             1 => ovlps[0],
@@ -181,42 +182,48 @@ fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
     kept_overlap_ids
 }
 
-fn is_valid_overlap(overlap: &Overlap) -> bool {
-    // Query contained in target
-    if (overlap.qlen - (overlap.qend - overlap.qstart)) <= OL_THRESHOLD {
+fn is_valid_overlap(
+    qlen: u32,
+    qstart: u32,
+    qend: u32,
+    strand: Strand,
+    tlen: u32,
+    tstart: u32,
+    tend: u32,
+) -> bool {
+    let ratio = (tend - tstart) as f64 / (qend - qstart) as f64;
+    if ratio < 0.9 || ratio > 1.111 {
+        return false;
+    }
+
+    if (qlen - (qend - qstart)) <= OL_THRESHOLD {
         return true;
     }
 
     // Target contained in query
-    if (overlap.tlen - (overlap.tend - overlap.tstart)) <= OL_THRESHOLD {
+    if (tlen - (tend - tstart)) <= OL_THRESHOLD {
         return true;
     }
 
-    let (qstart, qend) = match overlap.strand {
-        Strand::Forward => (overlap.qstart, overlap.qend),
-        Strand::Reverse => (overlap.qlen - overlap.qend, overlap.qlen - overlap.qstart),
+    let (qstart, qend) = match strand {
+        Strand::Forward => (qstart, qend),
+        Strand::Reverse => (qlen - qend, qlen - qstart),
     };
 
     // Prefix overlap between query and target
-    if qstart > OL_THRESHOLD
-        && overlap.tstart <= OL_THRESHOLD
-        && (overlap.qlen - qend) <= OL_THRESHOLD
-    {
+    if qstart > OL_THRESHOLD && tstart <= OL_THRESHOLD && (qlen - qend) <= OL_THRESHOLD {
         return true;
     }
 
     // Suffix overlap between query and target
-    if overlap.tstart > OL_THRESHOLD
-        && qstart <= OL_THRESHOLD
-        && (overlap.tlen - overlap.tend) <= OL_THRESHOLD
-    {
+    if tstart > OL_THRESHOLD && qstart <= OL_THRESHOLD && (tlen - tend) <= OL_THRESHOLD {
         return true;
     }
 
     false
 }
 
-pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
+pub fn extend_overlaps(overlaps: &mut [Overlap]) {
     //let primary_overlaps = find_primary_overlaps(&overlaps);
     //println!("Number of primary overlaps {}", primary_overlaps.len());
 
@@ -233,14 +240,6 @@ pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
         b
     })
     .collect()*/
-
-    let mut overlaps: Vec<Overlap> = overlaps
-        .into_iter()
-        .filter(|o| {
-            let b = is_valid_overlap(o);
-            b
-        })
-        .collect();
 
     overlaps.iter_mut().for_each(|mut o| match o.strand {
         Strand::Forward => {
@@ -261,7 +260,6 @@ pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
             o.qstart -= end;
         }
     });
-    overlaps
 }
 
 #[allow(dead_code)]

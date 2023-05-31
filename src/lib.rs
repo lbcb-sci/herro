@@ -1,10 +1,14 @@
 use aligners::align_overlaps;
 use crossbeam_channel::bounded;
 use features::extract_features;
+use rustc_hash::FxHashMap as HashMap;
 
-use std::{collections::HashMap, path::Path, thread};
+use std::{path::Path, thread};
 
-use crate::inference::{consensus_worker, inference_worker};
+use crate::{
+    inference::{consensus_worker, inference_worker},
+    overlaps::extend_overlaps,
+};
 
 mod aligners;
 mod features;
@@ -20,6 +24,7 @@ pub fn error_correction<T, U, V>(
     output_path: V,
     threads: usize,
     window_size: u32,
+    devices: &[usize],
 ) where
     T: AsRef<Path>,
     U: AsRef<Path>,
@@ -33,7 +38,8 @@ pub fn error_correction<T, U, V>(
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
-    let overlaps = overlaps::process_overlaps(overlaps::parse_paf(paf_path, &name_to_id));
+    let mut overlaps = overlaps::parse_paf(paf_path, &name_to_id);
+    extend_overlaps(&mut overlaps);
     eprintln!("Parsed {} overlaps", overlaps.len());
 
     rayon::ThreadPoolBuilder::new()
@@ -49,14 +55,15 @@ pub fn error_correction<T, U, V>(
     //extract_features(&reads, &overlaps, window_size, feats_sender);
 
     thread::scope(|s| {
-        s.spawn(|| {
-            inference_worker(
-                model_path,
-                tch::Device::Cuda(0),
-                feats_receiver,
-                pred_sender,
-            )
+        // Create inference thread for every GPU
+        devices.iter().for_each(|d| {
+            let fr = feats_receiver.clone();
+            let ps = pred_sender.clone();
+
+            s.spawn(|| inference_worker(model_path, tch::Device::Cuda(*d), fr, ps));
         });
+
+        // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
         extract_features(&reads, &overlaps, window_size, feats_sender);

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
-use indicatif::{ParallelProgressIterator, ProgressIterator};
+use indicatif::ParallelProgressIterator;
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
 use ndarray_npy::WriteNpyExt;
@@ -450,10 +450,10 @@ pub(crate) fn extract_features(
                     &mut qbuffer.borrow_mut(),
                 );
 
-                let qids: Vec<&str> = windows[i]
-                    .iter()
-                    .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
-                    .collect();
+                /*let qids: Vec<&str> = windows[i]
+                .iter()
+                .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
+                .collect();*/
                 features.push((i as u16, window));
 
                 //TODO handle Result
