@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
     fs::File,
     io::{BufWriter, Write},
     path::Path,
@@ -8,6 +7,8 @@ use std::{
 use crossbeam_channel::{Receiver, Sender};
 use lazy_static::lazy_static;
 use ndarray::{s, Array2, Array3, Axis};
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
 use tch::{CModule, IValue, IndexOp, Tensor};
 
 use crate::haec_io::HAECRecord;
@@ -18,8 +19,8 @@ const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 73.;
 
 lazy_static! {
-    static ref BASES_MAP: [u8; 256] = {
-        let mut map = [0; 256];
+    static ref BASES_MAP: [u8; 128] = {
+        let mut map = [0; 128];
         map[b'A' as usize] = 0;
         map[b'C' as usize] = 1;
         map[b'G' as usize] = 2;
@@ -33,8 +34,8 @@ lazy_static! {
         map[b'.' as usize] = 10;
         map
     };
-    static ref BASES_UPPER: [u8; 256] = {
-        let mut map = [0; 256];
+    static ref BASES_UPPER: [u8; 10] = {
+        let mut map = [0; 10];
         map[0] = b'A';
         map[1] = b'C';
         map[2] = b'G';
@@ -208,7 +209,12 @@ pub(crate) fn prepare_examples(rid: u32, features: Vec<(u16, Array3<u8>)>) -> In
     InputData::new(rid, windows)
 }
 
-fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8> {
+fn consensus(
+    data: OutputData,
+    read: &HAECRecord,
+    window_size: usize,
+    buffer: &mut [u8],
+) -> Vec<u8> {
     let windows: HashMap<_, (_, _)> = data
         .windows
         .into_iter()
@@ -216,7 +222,8 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
         .collect();
     let n_windows = ((read.seq.len() - 1) / window_size) + 1;
 
-    let uncorrected = read.seq.get_sequence();
+    read.seq.get_sequence(buffer);
+    let uncorrected = &buffer[..read.seq.len()];
     let mut corrected: Vec<u8> = Vec::new();
     for wid in 0..n_windows {
         if let Some((bases, logits)) = windows.get(&(wid as u16)) {
@@ -243,7 +250,7 @@ fn consensus(data: OutputData, read: &HAECRecord, window_size: usize) -> Vec<u8>
                         .axis_iter(Axis(0))
                         .enumerate()
                         .for_each(|(pos, pos_bases)| {
-                            let mut counts: HashMap<u8, u8> = HashMap::new();
+                            let mut counts: HashMap<u8, u8> = HashMap::default();
                             pos_bases.iter().for_each(|b| {
                                 if *b != BASES_MAP[b'.' as usize] {
                                     *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
@@ -304,6 +311,8 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
     let file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(file);
 
+    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
+    let mut buffer = vec![0; max_len];
     loop {
         let output = match receiver.recv() {
             Ok(output) => output,
@@ -311,7 +320,7 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
         };
 
         let rid = output.rid as usize;
-        let seq = consensus(output, &reads[rid], window_size as usize);
+        let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
 
         writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
         writer.write(&seq).unwrap();

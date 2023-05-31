@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 use itertools::Itertools;
 use rayon::prelude::*;
+use std::{cell::RefCell, sync::Arc};
 use thread_local::ThreadLocal;
 
 use crate::{
@@ -12,7 +11,7 @@ use crate::{
 
 pub mod wfa;
 
-#[derive(Debug, PartialEq, Clone, Eq)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq)]
 pub enum CigarOp {
     Match(u32),
     Mismatch(u32),
@@ -25,7 +24,7 @@ impl CigarOp {
         match self {
             Self::Insertion(l) => Self::Deletion(*l),
             Self::Deletion(l) => Self::Insertion(*l),
-            _ => self.clone(),
+            _ => *self,
         }
     }
 
@@ -76,52 +75,42 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
 
-#[inline]
-fn complement(base: u8) -> u8 {
-    match base {
-        b'A' => b'T', // A -> T
-        b'C' => b'G', // C -> G
-        b'G' => b'C', // G -> C
-        b'T' => b'A', // T -> A
-        _ => panic!("Invalid base."),
-    }
-}
-
-pub fn reverse_complement(seq: &[u8]) -> Vec<u8> {
-    seq.iter().rev().map(|c| complement(*c)).collect()
-}
-
 pub fn align_overlaps(overlaps: Vec<Overlap>, reads: &[HAECRecord]) -> Vec<Overlap> {
     let n_overlaps = overlaps.len();
     let aligners = Arc::new(ThreadLocal::new());
+    let sequences = Arc::new(ThreadLocal::new());
 
+    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     overlaps
         .into_par_iter()
         .progress_count(n_overlaps as u64)
         .filter_map(|mut o| {
             let aligner = aligners.get_or(|| wfa::WFAAligner::new());
+            let (target, query) = sequences.get_or(|| {
+                (
+                    RefCell::new(vec![0u8; max_len]),
+                    RefCell::new(vec![0u8; max_len]),
+                )
+            });
 
-            let query = if overlaps::Strand::Forward == o.strand {
-                let query = reads[o.qid as usize]
+            let qlen = o.qend as usize - o.qstart as usize;
+            if o.strand == overlaps::Strand::Forward {
+                reads[o.qid as usize]
                     .seq
-                    .get_subsequence(o.qstart as usize..o.qend as usize);
-                reverse_complement(&query)
+                    .get_subseq(o.qstart as usize..o.qend as usize, &mut query.borrow_mut());
             } else {
                 reads[o.qid as usize]
                     .seq
-                    .get_subsequence(o.qstart as usize..o.qend as usize)
+                    .get_rc_subseq(o.qstart as usize..o.qend as usize, &mut query.borrow_mut());
             };
 
-            let target = reads[o.tid as usize]
+            let tlen = o.tend as usize - o.tstart as usize;
+            reads[o.tid as usize]
                 .seq
-                .get_subsequence(o.tstart as usize..o.tend as usize);
+                .get_subseq(o.tstart as usize..o.tend as usize, &mut target.borrow_mut());
 
-            let align_result = aligner.align(&query, &target);
-            if align_result.is_none() {
-                return None;
-            }
+            let align_result = aligner.align(&query.borrow()[..qlen], &target.borrow()[..tlen])?;
 
-            let align_result = align_result.unwrap();
             o.cigar = Some(align_result.cigar);
 
             o.tstart += align_result.tstart;
@@ -184,7 +173,7 @@ pub(crate) fn get_proper_cigar(cigar: &[CigarOp], is_target: bool, strand: Stran
         if let CigarOp::Mismatch(l) = op {
             CigarOp::Match(*l)
         } else {
-            op.clone()
+            *op
         }
     });
 
@@ -314,7 +303,7 @@ pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -
         if i == cigar.len() - 1
             || std::mem::discriminant(&cigar[i]) != std::mem::discriminant(&cigar[i + 1])
         {
-            cigar[l] = cigar[i].clone();
+            cigar[l] = cigar[i];
             l += 1;
         } else {
             cigar[i + 1] = cigar[i].with_length(cigar[i].get_length() + cigar[i + 1].get_length());

@@ -1,8 +1,8 @@
-use std::{collections::HashMap, path::Path, thread};
-
 use aligners::align_overlaps;
 use crossbeam_channel::bounded;
 use features::extract_features;
+
+use std::{collections::HashMap, path::Path, thread};
 
 use crate::inference::{consensus_worker, inference_worker};
 
@@ -49,7 +49,14 @@ pub fn error_correction<T, U, V>(
     //extract_features(&reads, &overlaps, window_size, feats_sender);
 
     thread::scope(|s| {
-        s.spawn(|| inference_worker(model_path, tch::Device::Cuda(0), feats_receiver, pred_sender));
+        s.spawn(|| {
+            inference_worker(
+                model_path,
+                tch::Device::Cuda(0),
+                feats_receiver,
+                pred_sender,
+            )
+        });
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
         extract_features(&reads, &overlaps, window_size, feats_sender);

@@ -1,20 +1,21 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
+use std::sync::Arc;
 
 use crossbeam_channel::Sender;
-use indicatif::ParallelProgressIterator;
+use indicatif::{ParallelProgressIterator, ProgressIterator};
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use thread_local::ThreadLocal;
 
-use crate::aligners::{
-    calculate_accuracy, fix_cigar, get_proper_cigar, reverse_complement, CigarOp,
-};
+use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InputData};
 use crate::overlaps::{self, Overlap, Strand};
@@ -23,13 +24,13 @@ use crate::windowing::{extract_windows, OverlapWindow};
 pub(crate) const TOP_K: usize = 30;
 
 lazy_static! {
-    static ref BASE_COMP: HashMap<u8, u8> = {
-        let mut m = HashMap::new();
-        m.insert(b'A', b't');
-        m.insert(b'C', b'g');
-        m.insert(b'G', b'c');
-        m.insert(b'T', b'a');
-        m
+    static ref BASE_LOWER: [u8; 128] = {
+        let mut arr = [255; 128];
+        arr[b'A' as usize] = b'a';
+        arr[b'C' as usize] = b'c';
+        arr[b'G' as usize] = b'g';
+        arr[b'T' as usize] = b't';
+        arr
     };
 }
 
@@ -98,6 +99,7 @@ fn get_features_for_ol_window(
     offset: usize,
     tid: u32,
     max_ins: &[u16],
+    qbuffer: &mut [u8],
 ) {
     // Handle query sequence
     let (qstart, qend) = if window.overlap.tid == tid {
@@ -106,29 +108,32 @@ fn get_features_for_ol_window(
         (window.overlap.tstart, window.overlap.tend)
     };
 
-    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (u8, u8)>> = match window.overlap.strand
-    {
-        Strand::Forward => {
-            let range = (qstart + window.qstart) as usize..qend as usize;
-            let bases = query.seq.get_subsequence(range.clone());
-            let quals = &query.qual[range];
+    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> =
+        match window.overlap.strand {
+            Strand::Forward => {
+                let range = (qstart + window.qstart) as usize..qend as usize;
+                let qlen = qend as usize - (qstart + window.qstart) as usize;
 
-            Box::new(bases.into_iter().zip(quals).map(|(b, q)| (b, *q)))
-        }
-        Strand::Reverse => {
-            let range = qstart as usize..(qend - window.qstart) as usize;
-            let bases = query.seq.get_subsequence(range.clone());
-            let quals = &query.qual[range];
+                query.seq.get_subseq(range.clone(), qbuffer);
+                let quals = &query.qual[range];
 
-            Box::new(
-                bases
-                    .into_iter()
-                    .zip(quals)
-                    .rev()
-                    .map(|(b, q)| (*BASE_COMP.get(&b).unwrap(), *q)),
-            )
-        }
-    };
+                Box::new(qbuffer[..qlen].iter().zip(quals))
+            }
+            Strand::Reverse => {
+                let range = qstart as usize..(qend - window.qstart) as usize;
+                let qlen = (qend - window.qstart) as usize - qstart as usize;
+
+                query.seq.get_rc_subseq(range.clone(), qbuffer);
+                let quals = &query.qual[range];
+
+                Box::new(
+                    qbuffer[..qlen]
+                        .iter()
+                        .zip(quals.iter().rev())
+                        .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
+                )
+            }
+        };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
     // Number of cigars for the window
@@ -183,8 +188,8 @@ fn get_features_for_ol_window(
                         let (base, qual) = query_iter
                             .next()
                             .expect("Base and its quality should be present.");
-                        features[[idx, 0]] = base;
-                        features[[idx, 1]] = qual;
+                        features[[idx, 0]] = *base;
+                        features[[idx, 1]] = *qual;
 
                         idx += 1 + max_ins[tpos + i] as usize;
                     }
@@ -211,8 +216,8 @@ fn get_features_for_ol_window(
                             .next()
                             .expect("Base and its quality should be present.");
 
-                        features[[idx + i, 0]] = base;
-                        features[[idx + i, 1]] = qual;
+                        features[[idx + i, 0]] = *base;
+                        features[[idx + i, 1]] = *qual;
                     }
                     idx += max_ins[tpos - 1] as usize; // Move back to the last base
                 }
@@ -231,13 +236,17 @@ fn write_target_for_window(
     max_ins: &[u16],
     mut features: ArrayViewMut2<'_, u8>,
     window_length: usize,
+    tbuffer: &mut [u8],
 ) {
     features.column_mut(0).fill(b'*'); // Fill like forward
 
-    let mut tpos = 0;
+    let tlen = tstart + window_length - tstart;
     target
         .seq
-        .get_subsequence(tstart..tstart + window_length)
+        .get_subseq(tstart..tstart + window_length, tbuffer);
+
+    let mut tpos = 0;
+    tbuffer[..tlen]
         .iter()
         .zip(target.qual[tstart..tstart + window_length].iter())
         .enumerate()
@@ -257,6 +266,8 @@ fn get_features_for_window(
     max_ins: &[u16],
     tstart: usize,
     window_length: usize, // Full window length
+    tbuffer: &mut [u8],
+    qbuffer: &mut [u8],
 ) -> Array3<u8> {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
@@ -271,6 +282,7 @@ fn get_features_for_window(
         &max_ins,
         features.index_axis_mut(Axis(0), 0),
         window_length,
+        tbuffer,
     );
 
     // Write top-k overlaps for the window
@@ -284,6 +296,7 @@ fn get_features_for_window(
             ow.tstart as usize - tstart,
             tid,
             &max_ins,
+            qbuffer,
         )
     });
 
@@ -307,10 +320,21 @@ pub(crate) fn extract_features(
     sender: Sender<InputData>,
 ) {
     let read_to_overlaps = get_reads_to_overlaps(overlaps);
+
+    let sequences = Arc::new(ThreadLocal::new());
+    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
+
     read_to_overlaps
         .par_iter()
         .progress_count(read_to_overlaps.len() as u64)
         .for_each_with(sender, |sender, (rid, ovlps)| {
+            let (tbuffer, qbuffer) = sequences.get_or(|| {
+                (
+                    RefCell::new(vec![0u8; max_len]),
+                    RefCell::new(vec![0u8; max_len]),
+                )
+            });
+
             let read = &reads[*rid as usize];
 
             // Get overlaps for windows
@@ -334,20 +358,26 @@ pub(crate) fn extract_features(
                     (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
                 };
 
-                let target = reads[*rid as usize]
+                let tlen = tend as usize - tstart as usize;
+                reads[*rid as usize]
                     .seq
-                    .get_subsequence(tstart as usize..tend as usize);
-                let query = if overlaps::Strand::Forward == overlap.strand {
+                    .get_subseq(tstart as usize..tend as usize, &mut tbuffer.borrow_mut());
+
+                let qlen = qend as usize - qstart as usize;
+                if overlaps::Strand::Forward == overlap.strand {
                     reads[qid as usize]
                         .seq
-                        .get_subsequence(qstart as usize..qend as usize)
+                        .get_subseq(qstart as usize..qend as usize, &mut qbuffer.borrow_mut());
                 } else {
-                    let q = reads[qid as usize]
+                    reads[qid as usize]
                         .seq
-                        .get_subsequence(qstart as usize..qend as usize);
-                    reverse_complement(&q)
-                };
-                let (tshift, qshift) = fix_cigar(&mut cigar, &target, &query);
+                        .get_rc_subseq(qstart as usize..qend as usize, &mut qbuffer.borrow_mut());
+                }
+                let (tshift, qshift) = fix_cigar(
+                    &mut cigar,
+                    &tbuffer.borrow()[..tlen],
+                    &qbuffer.borrow()[..qlen],
+                );
 
                 //Extract windows
                 extract_windows(
@@ -364,7 +394,7 @@ pub(crate) fn extract_features(
             }
 
             // Create directory for the read
-            //let output_path = output_path.as_ref().join(&read.id);
+            //let output_path = Path::new("features").join(&read.id);
             //create_dir_all(&output_path).expect("Cannot create directory");
 
             let mut features = Vec::new();
@@ -416,12 +446,14 @@ pub(crate) fn extract_features(
                     &max_ins,
                     i * window_size as usize,
                     win_len,
+                    &mut tbuffer.borrow_mut(),
+                    &mut qbuffer.borrow_mut(),
                 );
 
-                /*let qids: Vec<&str> = windows[i]
-                .iter()
-                .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
-                .collect();*/
+                let qids: Vec<&str> = windows[i]
+                    .iter()
+                    .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
+                    .collect();
                 features.push((i as u16, window));
 
                 //TODO handle Result

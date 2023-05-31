@@ -3,6 +3,18 @@ use std::{ops::RangeBounds, path::Path, str::from_utf8};
 
 use needletail::parse_fastx_file;
 
+const BASE_ENCODING: [usize; 128] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 0, 255, 1, 255, 255, 255, 2, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 0, 255, 1, 255, 255, 255, 2, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+const BASE_DECODING: [u8; 4] = [b'A', b'C', b'G', b'T'];
+
 pub struct HAECRecord {
     pub id: String,
     pub description: Option<String>,
@@ -12,11 +24,10 @@ pub struct HAECRecord {
 
 impl HAECRecord {
     fn new(id: String, description: Option<String>, seq: Vec<u8>, qual: Vec<u8>) -> Self {
-        let len = seq.len();
         HAECRecord {
             id,
             description,
-            seq: HAECSeq::new(seq, len), //seq: HAECSeq::from(&*seq),
+            seq: HAECSeq::from(&*seq),
             qual,
         }
     }
@@ -52,12 +63,12 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
 
 #[derive(PartialEq, Debug)]
 pub struct HAECSeq {
-    data: Vec<u8>,
+    data: Vec<usize>,
     length: usize,
 }
 
 impl HAECSeq {
-    pub fn new(data: Vec<u8>, length: usize) -> Self {
+    pub fn new(data: Vec<usize>, length: usize) -> Self {
         HAECSeq { data, length }
     }
 
@@ -65,26 +76,16 @@ impl HAECSeq {
         return self.length;
     }
 
-    pub fn get_sequence(&self) -> Vec<u8> {
-        Vec::from(self)
+    pub fn get_sequence(&self, buffer: &mut [u8]) {
+        decode(&self.data, self.length, .., false, buffer)
     }
 
-    pub fn get_subsequence<R: RangeBounds<usize>>(&self, range: R) -> Vec<u8> {
-        //decode(&self.data, self.length, range)
+    pub fn get_subseq<R: RangeBounds<usize>>(&self, range: R, buffer: &mut [u8]) {
+        decode(&self.data, self.length, range, false, buffer)
+    }
 
-        let start = match range.start_bound() {
-            std::ops::Bound::Unbounded => 0,
-            std::ops::Bound::Included(s) => *s,
-            std::ops::Bound::Excluded(s) => *s + 1,
-        };
-
-        let end = match range.end_bound() {
-            std::ops::Bound::Unbounded => self.length,
-            std::ops::Bound::Included(e) => *e + 1,
-            std::ops::Bound::Excluded(e) => *e,
-        };
-
-        Vec::from(&self.data[start..end])
+    pub fn get_rc_subseq<R: RangeBounds<usize>>(&self, range: R, buffer: &mut [u8]) {
+        decode(&self.data, self.length, range, true, buffer)
     }
 }
 
@@ -97,32 +98,37 @@ impl From<&[u8]> for HAECSeq {
 
 impl From<&HAECSeq> for Vec<u8> {
     fn from(value: &HAECSeq) -> Self {
-        decode(&value.data, value.length, ..)
+        let mut seq = vec![0; value.length];
+        decode(&value.data, value.length, .., false, &mut seq);
+
+        seq
     }
 }
 
-fn encode(sequence: &[u8]) -> (Vec<u8>, usize) {
-    let length = sequence.len();
-    let mut data = vec![0; (length + 3) / 4];
+fn encode(sequence: &[u8]) -> (Vec<usize>, usize) {
+    let mut data = Vec::with_capacity((sequence.len() + 3) / 4);
+    let mut block = 0;
 
-    for (i, base) in sequence.iter().enumerate() {
-        data[i / 4] |= ((*base >> 1) & 0b11) << (6 - 2 * (i % 4));
+    for (i, b) in sequence.iter().enumerate() {
+        let c = BASE_ENCODING[*b as usize];
+
+        block |= c << ((i << 1) & 63);
+        if (i + 1) & 31 == 0 || i == sequence.len() - 1 {
+            data.push(block);
+            block = 0;
+        }
     }
 
-    (data, length)
+    (data, sequence.len())
 }
 
-fn decode_base(value: u8) -> u8 {
-    match value {
-        0b00 => b'A',
-        0b01 => b'C',
-        0b11 => b'G',
-        0b10 => b'T',
-        _ => unreachable!(),
-    }
-}
-
-fn decode<R: RangeBounds<usize>>(sequence: &[u8], length: usize, range: R) -> Vec<u8> {
+fn decode<R: RangeBounds<usize>>(
+    sequence: &[usize],
+    length: usize,
+    range: R,
+    is_reversed: bool,
+    buffer: &mut [u8],
+) {
     let start = match range.start_bound() {
         std::ops::Bound::Unbounded => 0,
         std::ops::Bound::Included(s) => *s,
@@ -139,41 +145,20 @@ fn decode<R: RangeBounds<usize>>(sequence: &[u8], length: usize, range: R) -> Ve
         panic!("Out of bounds for 2-bit sequence decoding.")
     }
 
-    let mut data = Vec::with_capacity(end - start);
-    let st_bin = start / 4;
-    let en_bin = end / 4;
-
-    // If there is only one window
-    if st_bin == en_bin {
-        (start % 4..end % 4).for_each(|i| {
-            let base = decode_base((sequence[st_bin] >> (6 - 2 * (i % 4))) & 0b11);
-            data.push(base);
-        });
-
-        return data;
+    if start >= end {
+        return;
     }
 
-    // First handle the first bin
-    (start % 4..4).for_each(|i| {
-        let base = decode_base((sequence[st_bin] >> (6 - 2 * (i % 4))) & 0b11);
-        data.push(base);
-    });
+    let rc_mask = if is_reversed { 3 } else { 0 };
+    (start..end).into_iter().for_each(|mut i| {
+        let idx = i - start;
+        if is_reversed {
+            i = end - idx - 1;
+        }
 
-    // Handle full bins
-    (st_bin + 1..en_bin).for_each(|bin| {
-        (0..4).for_each(|i| {
-            let base = decode_base((sequence[bin] >> (6 - 2 * (i % 4))) & 0b11);
-            data.push(base);
-        });
+        let code = ((sequence[i >> 5] >> ((i << 1) & 63)) & 3) ^ rc_mask;
+        buffer[idx] = BASE_DECODING[code];
     });
-
-    // Handle last bin
-    (0..end % 4).for_each(|i| {
-        let base = decode_base((sequence[en_bin] >> (6 - 2 * (i % 4))) & 0b11);
-        data.push(base);
-    });
-
-    data
 }
 
 #[cfg(test)]
@@ -187,67 +172,108 @@ mod tests {
         let sequence = "ACGT";
         let result = encode(sequence.as_bytes());
 
-        assert_eq!(result, (vec![0b00011110], 4));
+        assert_eq!(result, (vec![0b11100100], 4));
     }
 
     #[test]
     fn encode_sequence2() {
         let haec_seq = HAECSeq::from("ACGTACG".as_bytes());
-        assert_eq!(haec_seq, HAECSeq::new(vec![0b00011110, 0b00011100], 7));
+        assert_eq!(haec_seq, HAECSeq::new(vec![0b10010011100100], 7));
     }
 
     #[test]
     fn decode_sequence1() {
-        let encoded = vec![0b00011110];
+        let encoded = vec![0b11100100];
         let length = 4;
 
-        let decoded = decode(&encoded, length, ..);
-        assert_eq!(decoded, "ACGT".as_bytes());
+        let mut buffer = vec![0; 4];
+        decode(&encoded, length, .., false, &mut buffer);
+        assert_eq!(&buffer[..4], "ACGT".as_bytes());
     }
 
     #[test]
     fn decode_sequence2() {
-        let haec_seq = HAECSeq::new(vec![0b00011110, 0b00011100], 7);
+        let haec_seq = HAECSeq::new(vec![0b10010011100100], 7);
         assert_eq!(Vec::from(&haec_seq), "ACGTACG".as_bytes());
     }
 
     #[test]
     fn test_range1() {
         let haec_seq = HAECSeq::from("ACGTACGTACGT".as_bytes());
-        let subseq = haec_seq.get_subsequence(3..10);
 
-        assert_eq!(&subseq, "TACGTAC".as_bytes())
+        let mut buffer = vec![0; 100];
+        haec_seq.get_subseq(3..10, &mut buffer);
+
+        assert_eq!(&buffer[..7], "TACGTAC".as_bytes())
     }
 
     #[test]
     fn test_range2() {
         let haec_seq = HAECSeq::from("ACGTACGTACGT".as_bytes());
-        let subseq = haec_seq.get_subsequence(3..);
 
-        assert_eq!(&subseq, "TACGTACGT".as_bytes())
+        let mut buffer = vec![0; 100];
+        haec_seq.get_subseq(3.., &mut buffer);
+
+        assert_eq!(&buffer[..9], "TACGTACGT".as_bytes())
     }
 
     #[test]
     fn test_range3() {
         let haec_seq = HAECSeq::from("ACGTACGTACGT".as_bytes());
-        let subseq = haec_seq.get_subsequence(3..haec_seq.len());
 
-        assert_eq!(&subseq, "TACGTACGT".as_bytes())
+        let mut buffer = vec![0; 100];
+        haec_seq.get_subseq(3..haec_seq.len(), &mut buffer);
+
+        assert_eq!(&buffer[..9], "TACGTACGT".as_bytes())
     }
 
     #[test]
     fn test_range4() {
         let haec_seq = HAECSeq::from("ACGTACGTACGT".as_bytes());
-        let subseq = haec_seq.get_subsequence(..);
 
-        assert_eq!(&subseq, "ACGTACGTACGT".as_bytes())
+        let mut buffer = vec![0; 100];
+        haec_seq.get_subseq(.., &mut buffer);
+
+        assert_eq!(&buffer[..12], "ACGTACGTACGT".as_bytes())
     }
 
     #[test]
     fn test_range5() {
         let haec_seq = HAECSeq::from("ACGTACGTACGT".as_bytes());
-        let subseq = haec_seq.get_subsequence(8..11);
 
-        assert_eq!(&subseq, "ACG".as_bytes())
+        let mut buffer = vec![0; 100];
+        haec_seq.get_subseq(8..11, &mut buffer);
+
+        assert_eq!(&buffer[..3], "ACG".as_bytes())
+    }
+
+    #[test]
+    fn test_rc1() {
+        let haec_seq = HAECSeq::from("ATCGATCGATCG".as_bytes());
+
+        let mut buffer = vec![0; 100];
+        haec_seq.get_rc_subseq(.., &mut buffer);
+
+        assert_eq!(&buffer[..12], "CGATCGATCGAT".as_bytes())
+    }
+
+    #[test]
+    fn test_rc2() {
+        let haec_seq = HAECSeq::from("ATCGATCGATCG".as_bytes());
+
+        let mut buffer = vec![0; 100];
+        haec_seq.get_rc_subseq(3.., &mut buffer);
+
+        assert_eq!(&buffer[..9], "CGATCGATC".as_bytes())
+    }
+
+    #[test]
+    fn test_rc3() {
+        let haec_seq = HAECSeq::from("ATCGATCGATCG".as_bytes());
+
+        let mut buffer = vec![0; 100];
+        haec_seq.get_rc_subseq(..9, &mut buffer);
+
+        assert_eq!(&buffer[..9], "TCGATCGAT".as_bytes())
     }
 }

@@ -6,7 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [workspace]
-members = ["wfa2-sys"]
+members = [".", "wfa2-sys"]
+
+[profile.release]
+lto = "thin"
 
 [dependencies]
 wfa2-sys = {path = "wfa2-sys"}
@@ -22,6 +25,7 @@ ndarray = "~0.15.6"
 ndarray-npy = "~0.8.1"
 tch = "0.13.0"
 crossbeam-channel = "~0.5.8"
+rustc-hash = "~1.1.0"
 
 [dev-dependencies]
 approx = "~0.5.1"

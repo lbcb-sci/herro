@@ -44,9 +44,9 @@ pub(crate) fn extract_windows<'a, 'b>(
     is_target: bool,
     window_size: u32,
 ) {
-    if is_target && (overlap.tend - overlap.tstart) < window_size {
-        return;
-    } else if (overlap.qend - overlap.qstart) < window_size {
+    if (is_target && (overlap.tend - overlap.tstart) < window_size)
+        || ((overlap.qend - overlap.qstart) < window_size)
+    {
         return;
     }
 
