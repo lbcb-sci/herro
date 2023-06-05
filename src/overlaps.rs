@@ -97,13 +97,17 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Vec<Overlap> {
+pub fn parse_paf<P: AsRef<Path>>(
+    path: P,
+    name_to_id: &HashMap<&str, u32>,
+) -> (Vec<Overlap>, HashMap<u32, HashSet<u32>>) {
     let file = File::open(path).expect("Cannot open overlap file.");
     let mut reader = BufReader::new(file);
 
     let mut buffer = String::new();
     let mut overlaps = Vec::new();
     let mut processed = HashSet::default();
+    let mut read_to_overlaps = HashMap::default();
     while let Ok(len) = reader.read_line(&mut buffer) {
         if len == 0 {
             break;
@@ -113,7 +117,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let qid = match name_to_id.get(data.next().unwrap()) {
             Some(qid) => *qid,
-            None => continue,
+            None => {
+                buffer.clear();
+                continue;
+            }
         };
         let qlen: u32 = data.next().unwrap().parse().unwrap();
         let qstart: u32 = data.next().unwrap().parse().unwrap();
@@ -127,7 +134,10 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
 
         let tid = match name_to_id.get(data.next().unwrap()) {
             Some(tid) => *tid,
-            None => continue,
+            None => {
+                buffer.clear();
+                continue;
+            }
         };
         let tlen: u32 = data.next().unwrap().parse().unwrap();
         let tstart: u32 = data.next().unwrap().parse().unwrap();
@@ -147,13 +157,22 @@ pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Ve
         if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
             let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
             overlaps.push(overlap);
+
+            read_to_overlaps
+                .entry(tid)
+                .or_insert_with(|| HashSet::default())
+                .insert(qid);
+
+            read_to_overlaps
+                .entry(qid)
+                .or_insert_with(|| HashSet::default())
+                .insert(tid);
         }
     }
 
     overlaps.shrink_to_fit();
 
-    eprintln!("Total overlaps {}", overlaps.len());
-    overlaps
+    (overlaps, read_to_overlaps)
 }
 
 #[allow(dead_code)]

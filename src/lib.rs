@@ -1,9 +1,11 @@
 use aligners::align_overlaps;
 use crossbeam_channel::bounded;
 use features::extract_features;
-use rustc_hash::FxHashMap as HashMap;
+use haec_io::HAECRecord;
+use overlaps::Overlap;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use std::{path::Path, thread};
+use std::{collections::VecDeque, path::Path, process::exit, thread};
 
 use crate::{
     inference::{consensus_worker, inference_worker},
@@ -30,6 +32,7 @@ pub fn error_correction<T, U, V>(
     U: AsRef<Path>,
     V: AsRef<Path> + Send + Sync,
 {
+    // Get fastq reads
     let reads = haec_io::get_reads(reads_path, window_size);
     let name_to_id: HashMap<_, _> = reads
         .iter()
@@ -38,9 +41,16 @@ pub fn error_correction<T, U, V>(
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
-    let mut overlaps = overlaps::parse_paf(paf_path, &name_to_id);
+    // Parse, filteer and extend overlaps
+    let (mut overlaps, read_to_overlaps) = overlaps::parse_paf(paf_path, &name_to_id);
     extend_overlaps(&mut overlaps);
     eprintln!("Parsed {} overlaps", overlaps.len());
+
+    // Build batches
+    let batches = build_batches(&overlaps, &read_to_overlaps);
+    batches.iter().for_each(|b| println!("{:?}", b));
+
+    exit(-1);
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
@@ -68,4 +78,48 @@ pub fn error_correction<T, U, V>(
 
         extract_features(&reads, &overlaps, window_size, feats_sender);
     });
+}
+
+fn build_batches(
+    overlaps: &[Overlap],
+    read_to_overlaps: &HashMap<u32, HashSet<u32>>,
+) -> Vec<HashSet<u32>> {
+    let mut unprocessed: HashSet<_> = read_to_overlaps.keys().map(|k| *k).collect();
+    let mut queue = VecDeque::new();
+
+    let mut batches = Vec::new();
+    let mut batch = HashSet::default();
+
+    // While all the reads haven't been processed
+    while unprocessed.len() > 0 {
+        // No more reads in the queue, get a new one
+        if queue.len() == 0 {
+            let rid = *unprocessed.iter().next().unwrap();
+            queue.push_back(rid);
+        }
+
+        let tid = queue.pop_front().unwrap();
+        if unprocessed.contains(&tid) {
+            // Add all the reads that overlap with this one
+            read_to_overlaps.get(&tid).unwrap().iter().for_each(|oid| {
+                let qid = overlaps[*oid as usize].return_other_id(tid);
+                queue.push_back(qid);
+            });
+
+            batch.insert(tid);
+            unprocessed.remove(&tid);
+
+            // Emit a new batch
+            if batch.len() >= 50_000 {
+                batches.push(batch);
+                batch = HashSet::default();
+            }
+        }
+    }
+
+    if batch.len() > 0 {
+        batches.push(batch);
+    }
+
+    batches
 }
