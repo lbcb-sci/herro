@@ -1,8 +1,10 @@
 use aligners::align_overlaps;
-use crossbeam_channel::bounded;
+use crossbeam_channel::{bounded, Sender};
 use features::extract_features;
 
+use haec_io::HAECRecord;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
+use inference::InputData;
 use overlaps::Overlap;
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
@@ -44,7 +46,6 @@ pub fn error_correction<T, U, V>(
 {
     // Get fastq reads
     let reads = haec_io::get_reads(reads_path, window_size);
-    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     let name_to_id: HashMap<_, _> = reads
         .iter()
         .enumerate()
@@ -57,14 +58,6 @@ pub fn error_correction<T, U, V>(
 
     // Build batches
     let batches = build_batches(&read_to_overlaps);
-
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_global()
-        .unwrap();
-
-    let aligners = Arc::new(ThreadLocal::new());
-    let sequences = Arc::new(ThreadLocal::new());
 
     let (feats_sender, feats_receiver) = bounded(1000);
     let (pred_sender, pred_receiver) = bounded(1000);
@@ -81,48 +74,79 @@ pub fn error_correction<T, U, V>(
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
-        let n_batches = batches.len();
-        batches
-            .into_iter()
-            .progress_count(n_batches as u64)
-            .for_each(|batch| {
-                let batch_len = batch.len();
-
-                let fs_batch = feats_sender.clone();
-
-                batch
-                    .into_par_iter()
-                    .progress_count(batch_len as u64)
-                    .for_each(|rid| {
-                        let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
-                        let (target, query) = sequences.get_or(|| {
-                            (
-                                RefCell::new(vec![0u8; max_len]),
-                                RefCell::new(vec![0u8; max_len]),
-                            )
-                        });
-
-                        let overlaps = read_to_overlaps.get(&rid).unwrap();
-                        align_overlaps(
-                            overlaps,
-                            &reads,
-                            &mut aligner.borrow_mut(),
-                            (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                        );
-
-                        extract_features(
-                            rid,
-                            &reads,
-                            overlaps,
-                            window_size,
-                            (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                            fs_batch.clone(),
-                        )
-                    });
-            });
+        align_and_extract(
+            batches,
+            &reads,
+            &read_to_overlaps,
+            feats_sender,
+            window_size,
+            threads,
+        );
     });
 
+    drop(feats_receiver);
+    drop(pred_sender);
+
     //extract_features(&reads, &overlaps, window_size, feats_sender);
+}
+
+fn align_and_extract(
+    batches: Vec<HashSet<u32>>,
+    reads: &[HAECRecord],
+    read_to_overlaps: &HashMap<u32, Vec<Arc<RwLock<Overlap>>>>,
+    feats_sender: Sender<InputData>,
+    window_size: u32,
+    threads: usize,
+) {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build_global()
+        .unwrap();
+
+    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
+
+    let aligners = Arc::new(ThreadLocal::new());
+    let sequences = Arc::new(ThreadLocal::new());
+
+    let n_batches = batches.len();
+    batches
+        .into_iter()
+        .progress_count(n_batches as u64)
+        .for_each(|batch| {
+            let batch_len = batch.len();
+
+            let fs_batch = feats_sender.clone();
+
+            batch
+                .into_par_iter()
+                .progress_count(batch_len as u64)
+                .for_each(|rid| {
+                    let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
+                    let (target, query) = sequences.get_or(|| {
+                        (
+                            RefCell::new(vec![0u8; max_len]),
+                            RefCell::new(vec![0u8; max_len]),
+                        )
+                    });
+
+                    let overlaps = read_to_overlaps.get(&rid).unwrap();
+                    align_overlaps(
+                        overlaps,
+                        &reads,
+                        &mut aligner.borrow_mut(),
+                        (&mut target.borrow_mut(), &mut query.borrow_mut()),
+                    );
+
+                    extract_features(
+                        rid,
+                        &reads,
+                        overlaps,
+                        window_size,
+                        (&mut target.borrow_mut(), &mut query.borrow_mut()),
+                        fs_batch.clone(),
+                    )
+                });
+        });
 }
 
 fn build_batches(read_to_overlaps: &HashMap<u32, Vec<Arc<RwLock<Overlap>>>>) -> Vec<HashSet<u32>> {
