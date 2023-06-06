@@ -31,6 +31,8 @@ mod inference;
 mod overlaps;
 mod windowing;
 
+pub type ReadOverlaps = Vec<Arc<RwLock<Overlap>>>;
+
 pub fn error_correction<T, U, V>(
     reads_path: T,
     paf_path: U,
@@ -57,7 +59,7 @@ pub fn error_correction<T, U, V>(
     let read_to_overlaps = overlaps::parse_paf(paf_path, &name_to_id);
 
     // Build batches
-    let batches = build_batches(&read_to_overlaps);
+    let batches = build_batches(read_to_overlaps);
 
     let (feats_sender, feats_receiver) = bounded(1000);
     let (pred_sender, pred_receiver) = bounded(1000);
@@ -71,29 +73,22 @@ pub fn error_correction<T, U, V>(
             s.spawn(|| inference_worker(model_path, tch::Device::Cuda(*d), fr, ps));
         });
 
+        // Drop the handles so that the inference threads can exit
+        drop(feats_receiver);
+        drop(pred_sender);
+
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
-        align_and_extract(
-            batches,
-            &reads,
-            &read_to_overlaps,
-            feats_sender,
-            window_size,
-            threads,
-        );
+        align_and_extract(batches, &reads, feats_sender, window_size, threads);
     });
-
-    drop(feats_receiver);
-    drop(pred_sender);
 
     //extract_features(&reads, &overlaps, window_size, feats_sender);
 }
 
 fn align_and_extract(
-    batches: Vec<HashSet<u32>>,
+    batches: Vec<Vec<(u32, ReadOverlaps)>>,
     reads: &[HAECRecord],
-    read_to_overlaps: &HashMap<u32, Vec<Arc<RwLock<Overlap>>>>,
     feats_sender: Sender<InputData>,
     window_size: u32,
     threads: usize,
@@ -120,7 +115,7 @@ fn align_and_extract(
             batch
                 .into_par_iter()
                 .progress_count(batch_len as u64)
-                .for_each(|rid| {
+                .for_each(|(rid, overlaps)| {
                     let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
                     let (target, query) = sequences.get_or(|| {
                         (
@@ -129,9 +124,8 @@ fn align_and_extract(
                         )
                     });
 
-                    let overlaps = read_to_overlaps.get(&rid).unwrap();
                     align_overlaps(
-                        overlaps,
+                        &overlaps,
                         &reads,
                         &mut aligner.borrow_mut(),
                         (&mut target.borrow_mut(), &mut query.borrow_mut()),
@@ -140,7 +134,7 @@ fn align_and_extract(
                     extract_features(
                         rid,
                         &reads,
-                        overlaps,
+                        &overlaps,
                         window_size,
                         (&mut target.borrow_mut(), &mut query.borrow_mut()),
                         fs_batch.clone(),
@@ -149,12 +143,14 @@ fn align_and_extract(
         });
 }
 
-fn build_batches(read_to_overlaps: &HashMap<u32, Vec<Arc<RwLock<Overlap>>>>) -> Vec<HashSet<u32>> {
+fn build_batches(
+    mut read_to_overlaps: HashMap<u32, ReadOverlaps>,
+) -> Vec<Vec<(u32, ReadOverlaps)>> {
     let mut unprocessed: HashSet<_> = read_to_overlaps.keys().map(|k| *k).collect();
     let mut queue = VecDeque::new();
 
     let mut batches = Vec::new();
-    let mut batch = HashSet::default();
+    let mut batch = Vec::with_capacity(20_000);
 
     // While all the reads haven't been processed
     while unprocessed.len() > 0 {
@@ -172,13 +168,13 @@ fn build_batches(read_to_overlaps: &HashMap<u32, Vec<Arc<RwLock<Overlap>>>>) -> 
                 queue.push_back(qid);
             });
 
-            batch.insert(tid);
+            batch.push((tid, read_to_overlaps.remove(&tid).unwrap()));
             unprocessed.remove(&tid);
 
             // Emit a new batch
-            if batch.len() >= 50_000 {
+            if batch.len() >= 20_000 {
                 batches.push(batch);
-                batch = HashSet::default();
+                batch = Vec::with_capacity(20_000);
             }
         }
     }
