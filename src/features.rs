@@ -31,23 +31,6 @@ lazy_static! {
     };
 }
 
-fn get_reads_to_overlaps(overlaps: &[Overlap]) -> HashMap<u32, Vec<&Overlap>> {
-    let mut read_to_overlaps = HashMap::new();
-    for overlap in overlaps {
-        read_to_overlaps
-            .entry(overlap.qid)
-            .or_insert_with(Vec::new)
-            .push(overlap);
-
-        read_to_overlaps
-            .entry(overlap.tid)
-            .or_insert_with(Vec::new)
-            .push(overlap);
-    }
-
-    read_to_overlaps
-}
-
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
     ovlps_cigar_map: &HashMap<u32, Vec<CigarOp>>,
