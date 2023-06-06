@@ -2,6 +2,9 @@ use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
 use std::fmt;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::sync::RwLock;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
@@ -31,6 +34,22 @@ impl fmt::Display for Strand {
 }
 
 #[derive(Debug)]
+pub enum CigarStatus {
+    Unprocessed,
+    Unmapped,
+    Mapped(Vec<CigarOp>),
+}
+
+impl CigarStatus {
+    pub fn as_ref(&self) -> Option<&[CigarOp]> {
+        match self {
+            Self::Mapped(cigar) => Some(cigar),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -41,7 +60,7 @@ pub struct Overlap {
     pub tlen: u32,
     pub tstart: u32,
     pub tend: u32,
-    pub cigar: Option<Vec<CigarOp>>,
+    pub cigar: CigarStatus,
 }
 
 impl Overlap {
@@ -66,7 +85,7 @@ impl Overlap {
             tlen,
             tstart,
             tend,
-            cigar: None,
+            cigar: CigarStatus::Unprocessed,
         }
     }
 
@@ -100,12 +119,11 @@ impl Eq for Overlap {}
 pub fn parse_paf<P: AsRef<Path>>(
     path: P,
     name_to_id: &HashMap<&str, u32>,
-) -> (Vec<Overlap>, HashMap<u32, HashSet<u32>>) {
+) -> HashMap<u32, Vec<Arc<RwLock<Overlap>>>> {
     let file = File::open(path).expect("Cannot open overlap file.");
     let mut reader = BufReader::new(file);
 
     let mut buffer = String::new();
-    let mut overlaps = Vec::new();
     let mut processed = HashSet::default();
     let mut read_to_overlaps = HashMap::default();
     while let Ok(len) = reader.read_line(&mut buffer) {
@@ -155,24 +173,24 @@ pub fn parse_paf<P: AsRef<Path>>(
         processed.insert((qid, tid));
 
         if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
-            let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
-            overlaps.push(overlap);
+            let mut overlap =
+                Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
+            extend_overlap(&mut overlap);
+            let overlap = Arc::new(RwLock::new(overlap));
 
             read_to_overlaps
                 .entry(tid)
-                .or_insert_with(|| HashSet::default())
-                .insert(qid);
+                .or_insert_with(|| Vec::new())
+                .push(Arc::clone(&overlap));
 
             read_to_overlaps
                 .entry(qid)
-                .or_insert_with(|| HashSet::default())
-                .insert(tid);
+                .or_insert_with(|| Vec::new())
+                .push(overlap);
         }
     }
 
-    overlaps.shrink_to_fit();
-
-    (overlaps, read_to_overlaps)
+    read_to_overlaps
 }
 
 #[allow(dead_code)]
@@ -281,6 +299,30 @@ pub fn extend_overlaps(overlaps: &mut [Overlap]) {
     });
 }
 
+fn extend_overlap(overlap: &mut Overlap) {
+    match overlap.strand {
+        Strand::Forward => {
+            let beginning = overlap.tstart.min(overlap.qstart).min(2500);
+            overlap.tstart -= beginning;
+            overlap.qstart -= beginning;
+            let end = (overlap.tlen - overlap.tend)
+                .min(overlap.qlen - overlap.qend)
+                .min(2500);
+            overlap.tend += end;
+            overlap.qend += end;
+        }
+        Strand::Reverse => {
+            let beginning = overlap.tstart.min(overlap.qlen - overlap.qend).min(2500);
+            overlap.tstart -= beginning;
+            overlap.qend += beginning;
+
+            let end = (overlap.tlen - overlap.tend).min(overlap.qstart).min(2500);
+            overlap.tend += end;
+            overlap.qstart -= end;
+        }
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn print_overlaps(overlaps: &[Overlap], reads: &[HAECRecord]) {
     for overlap in overlaps {
@@ -296,8 +338,8 @@ pub(crate) fn print_overlaps(overlaps: &[Overlap], reads: &[HAECRecord]) {
             overlap.tstart,
             overlap.tend,
             match overlap.cigar {
-                Some(ref c) => cigar_to_string(c),
-                None => "".to_string(),
+                CigarStatus::Mapped(ref c) => cigar_to_string(c),
+                CigarStatus::Unprocessed | CigarStatus::Unmapped => "".to_string(),
             }
         )
     }

@@ -1,8 +1,10 @@
+use std::sync::{Arc, Mutex, RwLock};
+
 use crate::{aligners::CigarOp, overlaps::Overlap};
 
-#[derive(Clone, Eq, PartialEq, Debug)]
+#[derive(Clone, Debug)]
 pub struct OverlapWindow<'a> {
-    pub overlap: &'a Overlap,
+    pub overlap: &'a Arc<RwLock<Overlap>>,
     pub tstart: u32,
     pub qstart: u32,
     pub cigar_start_idx: usize,
@@ -13,7 +15,7 @@ pub struct OverlapWindow<'a> {
 
 impl<'a> OverlapWindow<'a> {
     pub fn new(
-        overlap: &'a Overlap,
+        overlap: &'a Arc<RwLock<Overlap>>,
         tstart: u32,
         qstart: u32,
         cigar_start_idx: usize,
@@ -37,16 +39,16 @@ type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 
 pub(crate) fn extract_windows<'a, 'b>(
     windows: &mut Windows<'a>,
-    overlap: &'a Overlap,
+    overlap: &'a Arc<RwLock<Overlap>>,
     cigar: &[CigarOp],
     tshift: u32,
     qshift: u32,
     is_target: bool,
     window_size: u32,
 ) {
-    if (is_target && (overlap.tend - overlap.tstart) < window_size)
-        || ((overlap.qend - overlap.qstart) < window_size)
-    {
+    let o = overlap.read().unwrap();
+
+    if (is_target && (o.tend - o.tstart) < window_size) || ((o.qend - o.qstart) < window_size) {
         return;
     }
 
@@ -58,43 +60,43 @@ pub(crate) fn extract_windows<'a, 'b>(
 
     let zeroth_window_thresh = (0.1 * window_size as f32) as u32;
     let nth_window_thresh = if is_target {
-        overlap.tlen - zeroth_window_thresh
+        o.tlen - zeroth_window_thresh
     } else {
-        overlap.qlen - zeroth_window_thresh
+        o.qlen - zeroth_window_thresh
     };
 
     // Read is the target -> tstart
     // Read is the query  -> qstart
     if is_target {
-        first_window = if overlap.tstart < zeroth_window_thresh {
+        first_window = if o.tstart < zeroth_window_thresh {
             0
         } else {
-            (overlap.tstart + window_size - 1) / window_size
+            (o.tstart + window_size - 1) / window_size
         };
 
-        last_window = if overlap.tend > nth_window_thresh {
-            (overlap.tend - 1) / window_size + 1
+        last_window = if o.tend > nth_window_thresh {
+            (o.tend - 1) / window_size + 1
         } else {
-            overlap.tend / window_size
+            o.tend / window_size
         };
 
-        tstart = overlap.tstart;
-        tpos = overlap.tstart;
+        tstart = o.tstart;
+        tpos = o.tstart;
     } else {
-        first_window = if overlap.qstart < zeroth_window_thresh {
+        first_window = if o.qstart < zeroth_window_thresh {
             0
         } else {
-            (overlap.qstart + window_size - 1) / window_size
+            (o.qstart + window_size - 1) / window_size
         };
 
-        last_window = if overlap.qend > nth_window_thresh {
-            (overlap.qend - 1) / window_size + 1
+        last_window = if o.qend > nth_window_thresh {
+            (o.qend - 1) / window_size + 1
         } else {
-            overlap.qend / window_size
+            o.qend / window_size
         };
 
-        tstart = overlap.qstart;
-        tpos = overlap.qstart;
+        tstart = o.qstart;
+        tpos = o.qstart;
     }
 
     if last_window - first_window < 1 {
@@ -271,26 +273,26 @@ mod tests {
         builder.set_distance_metric(WFADistanceMetric::Edit);
         let aligner = builder.build();
         let cigar = aligner.align(query_seq, target_seq);
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
 
-        overlap.cigar = cigar;
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), true, Strand::Forward)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, true, WINDOW_SIZE);
 
         let mut expected_windows = vec![Vec::new(); n_windows];
-        expected_windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 4, 0));
-        expected_windows[1].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));
-        expected_windows[2].push(OverlapWindow::new(&overlap, 11, 5, 0, 6, 3));
-        expected_windows[3].push(OverlapWindow::new(&overlap, 16, 6, 3, 8, 0));
-        expected_windows[4].push(OverlapWindow::new(&overlap, 22, 8, 0, 12, 3));
-        expected_windows[5].push(OverlapWindow::new(&overlap, 29, 12, 3, 12, 8));
-        expected_windows[6].push(OverlapWindow::new(&overlap, 34, 12, 8, 13, 0));
+        expected_windows[0].push(OverlapWindow::new(&o, 0, 0, 0, 4, 0));
+        expected_windows[1].push(OverlapWindow::new(&o, 6, 4, 0, 5, 0));
+        expected_windows[2].push(OverlapWindow::new(&o, 11, 5, 0, 6, 3));
+        expected_windows[3].push(OverlapWindow::new(&o, 16, 6, 3, 8, 0));
+        expected_windows[4].push(OverlapWindow::new(&o, 22, 8, 0, 12, 3));
+        expected_windows[5].push(OverlapWindow::new(&o, 29, 12, 3, 12, 8));
+        expected_windows[6].push(OverlapWindow::new(&o, 34, 12, 8, 13, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_windows[i][0]);
@@ -314,24 +316,24 @@ mod tests {
         let aligner = builder.build();
         let cigar = aligner.align(query_seq, target_seq);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), true, Strand::Forward)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, true, WINDOW_SIZE);
 
         let mut expected_windows = vec![Vec::new(); n_windows];
-        expected_windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 2, 1));
-        expected_windows[1].push(OverlapWindow::new(&overlap, 3, 2, 1, 2, 6));
-        expected_windows[2].push(OverlapWindow::new(&overlap, 8, 2, 6, 2, 11));
-        expected_windows[3].push(OverlapWindow::new(&overlap, 13, 2, 11, 2, 16));
-        expected_windows[4].push(OverlapWindow::new(&overlap, 18, 2, 16, 3, 1));
-        expected_windows[5].push(OverlapWindow::new(&overlap, 23, 3, 1, 5, 0));
+        expected_windows[0].push(OverlapWindow::new(&o, 0, 0, 0, 2, 1));
+        expected_windows[1].push(OverlapWindow::new(&o, 3, 2, 1, 2, 6));
+        expected_windows[2].push(OverlapWindow::new(&o, 8, 2, 6, 2, 11));
+        expected_windows[3].push(OverlapWindow::new(&o, 13, 2, 11, 2, 16));
+        expected_windows[4].push(OverlapWindow::new(&o, 18, 2, 16, 3, 1));
+        expected_windows[5].push(OverlapWindow::new(&o, 23, 3, 1, 5, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_windows[i][0]);
@@ -357,22 +359,22 @@ mod tests {
         let cigar = aligner.align(query_seq, target_seq);
         println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), true, Strand::Forward)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, true, WINDOW_SIZE);
 
         let mut expected_windows = vec![Vec::new(); n_windows];
-        expected_windows[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 2, 1));
-        expected_windows[1].push(OverlapWindow::new(&overlap, 25, 2, 1, 2, 6));
-        expected_windows[2].push(OverlapWindow::new(&overlap, 30, 2, 6, 2, 11));
-        expected_windows[3].push(OverlapWindow::new(&overlap, 35, 2, 11, 3, 0));
+        expected_windows[0].push(OverlapWindow::new(&o, 0, 0, 0, 2, 1));
+        expected_windows[1].push(OverlapWindow::new(&o, 25, 2, 1, 2, 6));
+        expected_windows[2].push(OverlapWindow::new(&o, 30, 2, 6, 2, 11));
+        expected_windows[3].push(OverlapWindow::new(&o, 35, 2, 11, 3, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_windows[i][0]);
@@ -398,25 +400,25 @@ mod tests {
         let cigar = aligner.align(query_seq, target_seq);
         println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Reverse, 1, t_len, 0, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Reverse, 1, t_len, 0, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), false, Strand::Reverse)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), false, Strand::Reverse)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, false, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, false, WINDOW_SIZE);
 
         let mut expected_state = vec![Vec::new(); n_windows];
-        expected_state[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 0, 5));
-        expected_state[1].push(OverlapWindow::new(&overlap, 5, 0, 5, 2, 0));
-        expected_state[2].push(OverlapWindow::new(&overlap, 10, 2, 0, 4, 1));
-        expected_state[3].push(OverlapWindow::new(&overlap, 12, 4, 1, 4, 6));
-        expected_state[4].push(OverlapWindow::new(&overlap, 17, 4, 6, 6, 1));
-        expected_state[5].push(OverlapWindow::new(&overlap, 22, 6, 1, 8, 0));
-        expected_state[6].push(OverlapWindow::new(&overlap, 26, 8, 0, 11, 0));
+        expected_state[0].push(OverlapWindow::new(&o, 0, 0, 0, 0, 5));
+        expected_state[1].push(OverlapWindow::new(&o, 5, 0, 5, 2, 0));
+        expected_state[2].push(OverlapWindow::new(&o, 10, 2, 0, 4, 1));
+        expected_state[3].push(OverlapWindow::new(&o, 12, 4, 1, 4, 6));
+        expected_state[4].push(OverlapWindow::new(&o, 17, 4, 6, 6, 1));
+        expected_state[5].push(OverlapWindow::new(&o, 22, 6, 1, 8, 0));
+        expected_state[6].push(OverlapWindow::new(&o, 26, 8, 0, 11, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_state[i][0]);
@@ -442,25 +444,25 @@ mod tests {
         let cigar = aligner.align(query_seq, target_seq);
         println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Reverse, 1, t_len, 0, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Reverse, 1, t_len, 0, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Reverse)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), true, Strand::Reverse)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, true, WINDOW_SIZE);
 
         let mut expected_state = vec![Vec::new(); n_windows];
-        expected_state[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 4, 0));
-        expected_state[1].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));
-        expected_state[2].push(OverlapWindow::new(&overlap, 11, 5, 0, 6, 3));
-        expected_state[3].push(OverlapWindow::new(&overlap, 16, 6, 3, 8, 0));
-        expected_state[4].push(OverlapWindow::new(&overlap, 24, 8, 0, 10, 3));
-        expected_state[5].push(OverlapWindow::new(&overlap, 29, 10, 3, 10, 8));
-        expected_state[6].push(OverlapWindow::new(&overlap, 34, 10, 8, 11, 0));
+        expected_state[0].push(OverlapWindow::new(&o, 0, 0, 0, 4, 0));
+        expected_state[1].push(OverlapWindow::new(&o, 6, 4, 0, 5, 0));
+        expected_state[2].push(OverlapWindow::new(&o, 11, 5, 0, 6, 3));
+        expected_state[3].push(OverlapWindow::new(&o, 16, 6, 3, 8, 0));
+        expected_state[4].push(OverlapWindow::new(&o, 24, 8, 0, 10, 3));
+        expected_state[5].push(OverlapWindow::new(&o, 29, 10, 3, 10, 8));
+        expected_state[6].push(OverlapWindow::new(&o, 34, 10, 8, 11, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_state[i][0]);
@@ -486,25 +488,25 @@ mod tests {
         let cigar = aligner.align(query_seq, target_seq);
         println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 0, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), false, Strand::Forward)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), false, Strand::Forward)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, false, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, false, WINDOW_SIZE);
 
         let mut expected_state = vec![Vec::new(); n_windows];
-        expected_state[0].push(OverlapWindow::new(&overlap, 0, 0, 0, 3, 0));
-        expected_state[1].push(OverlapWindow::new(&overlap, 5, 3, 0, 4, 4));
-        expected_state[2].push(OverlapWindow::new(&overlap, 9, 4, 4, 6, 2));
-        expected_state[3].push(OverlapWindow::new(&overlap, 14, 6, 2, 6, 7));
-        expected_state[4].push(OverlapWindow::new(&overlap, 19, 6, 7, 9, 0));
-        expected_state[5].push(OverlapWindow::new(&overlap, 21, 9, 0, 10, 4));
-        expected_state[6].push(OverlapWindow::new(&overlap, 26, 10, 4, 11, 0));
+        expected_state[0].push(OverlapWindow::new(&o, 0, 0, 0, 3, 0));
+        expected_state[1].push(OverlapWindow::new(&o, 5, 3, 0, 4, 4));
+        expected_state[2].push(OverlapWindow::new(&o, 9, 4, 4, 6, 2));
+        expected_state[3].push(OverlapWindow::new(&o, 14, 6, 2, 6, 7));
+        expected_state[4].push(OverlapWindow::new(&o, 19, 6, 7, 9, 0));
+        expected_state[5].push(OverlapWindow::new(&o, 21, 9, 0, 10, 4));
+        expected_state[6].push(OverlapWindow::new(&o, 26, 10, 4, 11, 0));
 
         for i in 0..windows.len() {
             assert_eq!(windows[i][0], expected_state[i][0]);
@@ -531,25 +533,25 @@ mod tests {
         let cigar = aligner.align(query_seq, overlap_target);
         println!("{:?}", cigar);
 
-        let mut overlap = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 5, t_len);
-        overlap.cigar = cigar;
+        let mut o = Overlap::new(0, q_len, 0, q_len, Strand::Forward, 1, t_len, 5, t_len);
+        o.cigar = cigar;
         let mut cigar_iter =
-            get_cigar_iterator(overlap.cigar.as_ref().unwrap(), true, Strand::Forward)
+            get_cigar_iterator(o.cigar.as_ref().unwrap(), true, Strand::Forward)
                 .enumerate()
                 .peekable();
 
         let n_windows = (target_seq.len() + WINDOW_SIZE as usize - 1) / WINDOW_SIZE as usize;
         let mut windows = vec![Vec::new(); n_windows];
-        extract_windows(&mut windows, &overlap, &mut cigar_iter, true, WINDOW_SIZE);
+        extract_windows(&mut windows, &o, &mut cigar_iter, true, WINDOW_SIZE);
 
         let mut expected_state = vec![Vec::new(); n_windows];
-        expected_state[1].push(OverlapWindow::new(&overlap, 0, 0, 0, 4, 0));
-        expected_state[2].push(OverlapWindow::new(&overlap, 6, 4, 0, 5, 0));
-        expected_state[3].push(OverlapWindow::new(&overlap, 11, 5, 0, 6, 3));
-        expected_state[4].push(OverlapWindow::new(&overlap, 16, 6, 3, 8, 0));
-        expected_state[5].push(OverlapWindow::new(&overlap, 24, 8, 0, 10, 3));
-        expected_state[6].push(OverlapWindow::new(&overlap, 29, 10, 3, 10, 8));
-        expected_state[7].push(OverlapWindow::new(&overlap, 34, 10, 8, 11, 0));
+        expected_state[1].push(OverlapWindow::new(&o, 0, 0, 0, 4, 0));
+        expected_state[2].push(OverlapWindow::new(&o, 6, 4, 0, 5, 0));
+        expected_state[3].push(OverlapWindow::new(&o, 11, 5, 0, 6, 3));
+        expected_state[4].push(OverlapWindow::new(&o, 16, 6, 3, 8, 0));
+        expected_state[5].push(OverlapWindow::new(&o, 24, 8, 0, 10, 3));
+        expected_state[6].push(OverlapWindow::new(&o, 29, 10, 3, 10, 8));
+        expected_state[7].push(OverlapWindow::new(&o, 34, 10, 8, 11, 0));
 
         println!("{}", windows.len());
         for i in 1..windows.len() {

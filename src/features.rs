@@ -1,24 +1,21 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use crossbeam_channel::Sender;
-use indicatif::ParallelProgressIterator;
+
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
-use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use thread_local::ThreadLocal;
 
 use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InputData};
-use crate::overlaps::{self, Overlap, Strand};
+use crate::overlaps::{self, CigarStatus, Overlap, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
@@ -63,7 +60,7 @@ fn get_max_ins_for_window(
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
-        let qid = ow.overlap.return_other_id(tid);
+        let qid = ow.overlap.read().unwrap().return_other_id(tid);
         let cigar = ovlps_cigar_map.get(&qid).unwrap()[ow.cigar_start_idx..].iter();
         let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
 
@@ -102,38 +99,38 @@ fn get_features_for_ol_window(
     qbuffer: &mut [u8],
 ) {
     // Handle query sequence
-    let (qstart, qend) = if window.overlap.tid == tid {
-        (window.overlap.qstart, window.overlap.qend)
+    let overlap = window.overlap.read().unwrap();
+    let (qstart, qend) = if overlap.tid == tid {
+        (overlap.qstart, overlap.qend)
     } else {
-        (window.overlap.tstart, window.overlap.tend)
+        (overlap.tstart, overlap.tend)
     };
 
-    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> =
-        match window.overlap.strand {
-            Strand::Forward => {
-                let range = (qstart + window.qstart) as usize..qend as usize;
-                let qlen = qend as usize - (qstart + window.qstart) as usize;
+    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> = match overlap.strand {
+        Strand::Forward => {
+            let range = (qstart + window.qstart) as usize..qend as usize;
+            let qlen = qend as usize - (qstart + window.qstart) as usize;
 
-                query.seq.get_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
+            query.seq.get_subseq(range.clone(), qbuffer);
+            let quals = &query.qual[range];
 
-                Box::new(qbuffer[..qlen].iter().zip(quals))
-            }
-            Strand::Reverse => {
-                let range = qstart as usize..(qend - window.qstart) as usize;
-                let qlen = (qend - window.qstart) as usize - qstart as usize;
+            Box::new(qbuffer[..qlen].iter().zip(quals))
+        }
+        Strand::Reverse => {
+            let range = qstart as usize..(qend - window.qstart) as usize;
+            let qlen = (qend - window.qstart) as usize - qstart as usize;
 
-                query.seq.get_rc_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
+            query.seq.get_rc_subseq(range.clone(), qbuffer);
+            let quals = &query.qual[range];
 
-                Box::new(
-                    qbuffer[..qlen]
-                        .iter()
-                        .zip(quals.iter().rev())
-                        .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
-                )
-            }
-        };
+            Box::new(
+                qbuffer[..qlen]
+                    .iter()
+                    .zip(quals.iter().rev())
+                    .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
+            )
+        }
+    };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
     // Number of cigars for the window
@@ -146,7 +143,7 @@ fn get_features_for_ol_window(
     let cigar = cigar[window.cigar_start_idx as usize..cigar_end].iter();
 
     // Get features
-    let gap = if let Strand::Forward = window.overlap.strand {
+    let gap = if let Strand::Forward = overlap.strand {
         b'*'
     } else {
         b'#'
@@ -287,7 +284,7 @@ fn get_features_for_window(
 
     // Write top-k overlaps for the window
     overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
-        let qid = ow.overlap.return_other_id(tid);
+        let qid = ow.overlap.read().unwrap().return_other_id(tid);
         get_features_for_ol_window(
             features.index_axis_mut(Axis(0), i + 1),
             ow,
@@ -314,155 +311,141 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
 }
 
 pub(crate) fn extract_features(
+    rid: u32,
     reads: &[HAECRecord],
-    overlaps: &[Overlap],
+    overlaps: &[Arc<RwLock<Overlap>>],
     window_size: u32,
+    (tbuf, qbuf): (&mut [u8], &mut [u8]),
     sender: Sender<InputData>,
 ) {
-    let read_to_overlaps = get_reads_to_overlaps(overlaps);
+    let read = &reads[rid as usize];
 
-    let sequences = Arc::new(ThreadLocal::new());
-    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
+    // Get overlaps for windows
+    let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
+    let mut windows = vec![Vec::new(); n_windows];
 
-    read_to_overlaps
-        .par_iter()
-        .progress_count(read_to_overlaps.len() as u64)
-        .for_each_with(sender, |sender, (rid, ovlps)| {
-            let (tbuffer, qbuffer) = sequences.get_or(|| {
-                (
-                    RefCell::new(vec![0u8; max_len]),
-                    RefCell::new(vec![0u8; max_len]),
-                )
-            });
+    let mut ovlps_cigar_map = HashMap::new();
+    for ovlp in overlaps {
+        let overlap = ovlp.read().unwrap();
+        if let CigarStatus::Unmapped = overlap.cigar {
+            continue;
+        }
 
-            let read = &reads[*rid as usize];
+        let qid = overlap.return_other_id(rid);
 
-            // Get overlaps for windows
-            let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
-            let mut windows = vec![Vec::new(); n_windows];
+        let mut cigar = get_proper_cigar(
+            overlap.cigar.as_ref().unwrap(),
+            overlap.tid == rid,
+            overlap.strand,
+        );
 
-            let mut ovlps_cigar_map = HashMap::new();
-            for overlap in ovlps {
-                let qid = overlap.return_other_id(*rid);
+        // TODO - get proper target and query
+        let (tstart, tend, qstart, qend) = if overlap.tid == rid {
+            (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
+        } else {
+            (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
+        };
 
-                let mut cigar = get_proper_cigar(
-                    overlap.cigar.as_ref().unwrap(),
-                    overlap.tid == *rid,
-                    overlap.strand,
-                );
+        let tlen = tend as usize - tstart as usize;
+        reads[rid as usize]
+            .seq
+            .get_subseq(tstart as usize..tend as usize, tbuf);
 
-                // TODO - get proper target and query
-                let (tstart, tend, qstart, qend) = if overlap.tid == *rid {
-                    (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
-                } else {
-                    (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
-                };
+        let qlen = qend as usize - qstart as usize;
+        if overlaps::Strand::Forward == overlap.strand {
+            reads[qid as usize]
+                .seq
+                .get_subseq(qstart as usize..qend as usize, qbuf);
+        } else {
+            reads[qid as usize]
+                .seq
+                .get_rc_subseq(qstart as usize..qend as usize, qbuf);
+        }
+        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]);
 
-                let tlen = tend as usize - tstart as usize;
-                reads[*rid as usize]
-                    .seq
-                    .get_subseq(tstart as usize..tend as usize, &mut tbuffer.borrow_mut());
+        //Extract windows
+        extract_windows(
+            &mut windows,
+            ovlp,
+            &cigar,
+            tshift,
+            qshift,
+            overlap.tid == rid,
+            window_size,
+        );
 
-                let qlen = qend as usize - qstart as usize;
-                if overlaps::Strand::Forward == overlap.strand {
-                    reads[qid as usize]
-                        .seq
-                        .get_subseq(qstart as usize..qend as usize, &mut qbuffer.borrow_mut());
-                } else {
-                    reads[qid as usize]
-                        .seq
-                        .get_rc_subseq(qstart as usize..qend as usize, &mut qbuffer.borrow_mut());
-                }
-                let (tshift, qshift) = fix_cigar(
-                    &mut cigar,
-                    &tbuffer.borrow()[..tlen],
-                    &qbuffer.borrow()[..qlen],
-                );
+        ovlps_cigar_map.insert(qid, cigar);
+    }
 
-                //Extract windows
-                extract_windows(
-                    &mut windows,
-                    &overlap,
-                    &cigar,
-                    tshift,
-                    qshift,
-                    overlap.tid == *rid,
-                    window_size,
-                );
+    // Create directory for the read
+    //let output_path = Path::new("features").join(&read.id);
+    //create_dir_all(&output_path).expect("Cannot create directory");
 
-                ovlps_cigar_map.insert(qid, cigar);
-            }
+    let mut features = Vec::new();
+    for i in 0..n_windows {
+        if windows[i].len() == 0 {
+            continue;
+        }
 
-            // Create directory for the read
-            //let output_path = Path::new("features").join(&read.id);
-            //create_dir_all(&output_path).expect("Cannot create directory");
+        let win_len = if i == n_windows - 1 {
+            read.seq.len() - i * window_size as usize
+        } else {
+            window_size as usize
+        };
 
-            let mut features = Vec::new();
-            for i in 0..n_windows {
-                if windows[i].len() == 0 {
-                    continue;
-                }
+        // Filter windows
+        windows[i].retain(|ow| {
+            let qid = ow.overlap.read().unwrap().return_other_id(rid);
 
-                let win_len = if i == n_windows - 1 {
-                    read.seq.len() - i * window_size as usize
-                } else {
-                    window_size as usize
-                };
-
-                // Filter windows
-                windows[i].retain(|ow| {
-                    let qid = ow.overlap.return_other_id(*rid);
-
-                    // TODO: Handle CIGAR offsets
-                    let cigar = ovlps_cigar_map.get(&qid).unwrap();
-                    let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
-                    overlap_window_filter(&cigar[ow.cigar_start_idx..cigar_end])
-                });
-
-                // Sort window to take TOP-K
-                windows[i].sort_by_key(|ow| {
-                    let cigar = ovlps_cigar_map
-                        .get(&ow.overlap.return_other_id(*rid))
-                        .unwrap();
-
-                    let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
-                    let acc = calculate_accuracy(&cigar[ow.cigar_start_idx..cigar_end]);
-                    OrderedFloat(-acc)
-                });
-
-                let max_ins = get_max_ins_for_window(
-                    &windows[i],
-                    &ovlps_cigar_map,
-                    *rid,
-                    i * window_size as usize,
-                    win_len,
-                );
-
-                let window = get_features_for_window(
-                    &mut windows[i],
-                    &ovlps_cigar_map,
-                    *rid,
-                    reads,
-                    &max_ins,
-                    i * window_size as usize,
-                    win_len,
-                    &mut tbuffer.borrow_mut(),
-                    &mut qbuffer.borrow_mut(),
-                );
-
-                /*let qids: Vec<&str> = windows[i]
-                .iter()
-                .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
-                .collect();*/
-                features.push((i as u16, window));
-
-                //TODO handle Result
-                //output_features(&output_path, i, &qids, &window);
-            }
-
-            let features = prepare_examples(*rid, features);
-            sender.send(features).unwrap();
+            // TODO: Handle CIGAR offsets
+            let cigar = ovlps_cigar_map.get(&qid).unwrap();
+            let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
+            overlap_window_filter(&cigar[ow.cigar_start_idx..cigar_end])
         });
+
+        // Sort window to take TOP-K
+        windows[i].sort_by_key(|ow| {
+            let cigar = ovlps_cigar_map
+                .get(&ow.overlap.read().unwrap().return_other_id(rid))
+                .unwrap();
+
+            let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
+            let acc = calculate_accuracy(&cigar[ow.cigar_start_idx..cigar_end]);
+            OrderedFloat(-acc)
+        });
+
+        let max_ins = get_max_ins_for_window(
+            &windows[i],
+            &ovlps_cigar_map,
+            rid,
+            i * window_size as usize,
+            win_len,
+        );
+
+        let window = get_features_for_window(
+            &mut windows[i],
+            &ovlps_cigar_map,
+            rid,
+            reads,
+            &max_ins,
+            i * window_size as usize,
+            win_len,
+            tbuf,
+            qbuf,
+        );
+
+        /*let qids: Vec<&str> = windows[i]
+        .iter()
+        .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
+        .collect();*/
+        features.push((i as u16, window));
+
+        //TODO handle Result
+        //output_features(&output_path, i, &qids, &window);
+    }
+
+    let features = prepare_examples(rid, features);
+    sender.send(features).unwrap();
 }
 
 fn output_features<P: AsRef<Path>>(

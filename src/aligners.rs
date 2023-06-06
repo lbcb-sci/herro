@@ -1,13 +1,12 @@
-use indicatif::ParallelProgressIterator;
 use itertools::Itertools;
-use rayon::prelude::*;
-use std::{cell::RefCell, sync::Arc};
-use thread_local::ThreadLocal;
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     haec_io::HAECRecord,
-    overlaps::{self, Overlap, Strand},
+    overlaps::{self, CigarStatus, Overlap, Strand},
 };
+
+use self::wfa::WFAAligner;
 
 pub mod wfa;
 
@@ -75,61 +74,56 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
 
-pub fn align_overlaps(overlaps: Vec<Overlap>, reads: &[HAECRecord]) -> Vec<Overlap> {
-    let n_overlaps = overlaps.len();
-    let aligners = Arc::new(ThreadLocal::new());
-    let sequences = Arc::new(ThreadLocal::new());
+pub fn align_overlaps(
+    overlaps: &[Arc<RwLock<Overlap>>],
+    reads: &[HAECRecord],
+    aligner: &mut WFAAligner,
+    (tbuf, qbuf): (&mut [u8], &mut [u8]),
+) {
+    overlaps.iter().for_each(|overlap| {
+        let mut o = overlap.write().unwrap();
+        if !matches!(o.cigar, CigarStatus::Unprocessed) {
+            return;
+        }
 
-    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    overlaps
-        .into_par_iter()
-        .progress_count(n_overlaps as u64)
-        .filter_map(|mut o| {
-            let aligner = aligners.get_or(|| wfa::WFAAligner::new());
-            let (target, query) = sequences.get_or(|| {
-                (
-                    RefCell::new(vec![0u8; max_len]),
-                    RefCell::new(vec![0u8; max_len]),
-                )
-            });
-
-            let qlen = o.qend as usize - o.qstart as usize;
-            if o.strand == overlaps::Strand::Forward {
-                reads[o.qid as usize]
-                    .seq
-                    .get_subseq(o.qstart as usize..o.qend as usize, &mut query.borrow_mut());
-            } else {
-                reads[o.qid as usize]
-                    .seq
-                    .get_rc_subseq(o.qstart as usize..o.qend as usize, &mut query.borrow_mut());
-            };
-
-            let tlen = o.tend as usize - o.tstart as usize;
-            reads[o.tid as usize]
+        let qlen = o.qend as usize - o.qstart as usize;
+        if o.strand == overlaps::Strand::Forward {
+            reads[o.qid as usize]
                 .seq
-                .get_subseq(o.tstart as usize..o.tend as usize, &mut target.borrow_mut());
+                .get_subseq(o.qstart as usize..o.qend as usize, qbuf);
+        } else {
+            reads[o.qid as usize]
+                .seq
+                .get_rc_subseq(o.qstart as usize..o.qend as usize, qbuf);
+        };
 
-            let align_result = aligner.align(&query.borrow()[..qlen], &target.borrow()[..tlen])?;
+        let tlen = o.tend as usize - o.tstart as usize;
+        reads[o.tid as usize]
+            .seq
+            .get_subseq(o.tstart as usize..o.tend as usize, tbuf);
 
-            o.cigar = Some(align_result.cigar);
+        let align_result = aligner.align(&qbuf[..qlen], &tbuf[..tlen]);
+        if let Some(result) = align_result {
+            o.cigar = CigarStatus::Mapped(result.cigar);
 
-            o.tstart += align_result.tstart;
-            o.tend -= align_result.tend;
+            o.tstart += result.tstart;
+            o.tend -= result.tend;
 
             match o.strand {
                 overlaps::Strand::Forward => {
-                    o.qstart += align_result.qstart;
-                    o.qend -= align_result.qend;
+                    o.qstart += result.qstart;
+                    o.qend -= result.qend;
                 }
                 overlaps::Strand::Reverse => {
-                    o.qstart += align_result.qend;
-                    o.qend -= align_result.qstart;
+                    o.qstart += result.qend;
+                    o.qend -= result.qstart;
                 }
             }
-
-            Some(o)
-        })
-        .collect()
+        } else {
+            o.cigar = CigarStatus::Unmapped;
+            return;
+        }
+    })
 }
 
 pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {

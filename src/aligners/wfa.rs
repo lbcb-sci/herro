@@ -50,7 +50,7 @@ impl WFAAligner {
         }
     }
 
-    pub fn align(&self, query: &[u8], target: &[u8]) -> Option<AlignmentResult> {
+    pub fn align(&mut self, query: &[u8], target: &[u8]) -> Option<AlignmentResult> {
         unsafe {
             let q_seq: &[i8] = std::mem::transmute(query);
             let t_seq: &[i8] = std::mem::transmute(target);
@@ -209,7 +209,7 @@ mod tests {
         let target = "AAAACTCTTTCCTGA";
         let query = "AAAAACCTTCTGA";
 
-        let aligner = WFAAligner::new();
+        let mut aligner = WFAAligner::new();
         let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
 
         println!("{}", cigar_to_string(&cigar.cigar));
@@ -220,7 +220,7 @@ mod tests {
         let target = "TCAGAAGGTTTTT";
         let query = "TCAGGAAAGAGTTTT";
 
-        let aligner = WFAAligner::new();
+        let mut aligner = WFAAligner::new();
         let cigar = aligner.align(query.as_bytes(), target.as_bytes()).unwrap();
 
         println!("{}", cigar_to_string(&cigar.cigar));
