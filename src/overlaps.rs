@@ -49,7 +49,7 @@ impl CigarStatus {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -60,7 +60,6 @@ pub struct Overlap {
     pub tlen: u32,
     pub tstart: u32,
     pub tend: u32,
-    pub cigar: CigarStatus,
 }
 
 impl Overlap {
@@ -85,7 +84,6 @@ impl Overlap {
             tlen,
             tstart,
             tend,
-            cigar: CigarStatus::Unprocessed,
         }
     }
 
@@ -98,6 +96,21 @@ impl Overlap {
             return self.tid;
         } else {
             return self.qid;
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct Alignment {
+    pub overlap: Overlap,
+    pub cigar: CigarStatus,
+}
+
+impl Alignment {
+    pub fn new(overlap: Overlap) -> Self {
+        Alignment {
+            overlap: overlap,
+            cigar: CigarStatus::Unprocessed,
         }
     }
 }
@@ -119,7 +132,7 @@ impl Eq for Overlap {}
 pub fn parse_paf<P: AsRef<Path>>(
     path: P,
     name_to_id: &HashMap<&str, u32>,
-) -> HashMap<u32, Vec<Arc<RwLock<Overlap>>>> {
+) -> HashMap<u32, Vec<Arc<RwLock<Alignment>>>> {
     let file = File::open(path).expect("Cannot open overlap file.");
     let mut reader = BufReader::new(file);
 
@@ -173,10 +186,11 @@ pub fn parse_paf<P: AsRef<Path>>(
         processed.insert((qid, tid));
 
         if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
-            let mut overlap =
-                Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
-            extend_overlap(&mut overlap);
-            let overlap = Arc::new(RwLock::new(overlap));
+            let mut alignment = Alignment::new(Overlap::new(
+                qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend,
+            ));
+            extend_overlap(&mut alignment.overlap);
+            let overlap = Arc::new(RwLock::new(alignment));
 
             read_to_overlaps
                 .entry(tid)
@@ -191,32 +205,6 @@ pub fn parse_paf<P: AsRef<Path>>(
     }
 
     read_to_overlaps
-}
-
-#[allow(dead_code)]
-fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
-    let mut ovlps_for_pairs = HashMap::default();
-    for i in 0..overlaps.len() {
-        ovlps_for_pairs
-            .entry((overlaps[i].qid, overlaps[i].tid))
-            .or_insert_with(|| Vec::new())
-            .push(i);
-    }
-
-    let mut kept_overlap_ids = HashSet::default();
-    for ((_, _), ovlps) in ovlps_for_pairs {
-        let kept_id = match ovlps.len() {
-            1 => ovlps[0],
-            _ => ovlps
-                .into_iter()
-                .max_by_key(|id| overlaps[*id].target_overlap_length())
-                .unwrap(),
-        };
-
-        kept_overlap_ids.insert(kept_id);
-    }
-
-    kept_overlap_ids
 }
 
 fn is_valid_overlap(
@@ -260,45 +248,6 @@ fn is_valid_overlap(
     false
 }
 
-pub fn extend_overlaps(overlaps: &mut [Overlap]) {
-    //let primary_overlaps = find_primary_overlaps(&overlaps);
-    //println!("Number of primary overlaps {}", primary_overlaps.len());
-
-    /*overlaps
-    .into_iter()
-    .enumerate()
-    //.filter(|(i, _)| primary_overlaps.contains(i)) // Keep only primary overlaps
-    .map(|(_, o)| {
-        //extend_overlap(&mut o);
-        o
-    })
-    .filter(|o| {
-        let b = is_valid_overlap(o);
-        b
-    })
-    .collect()*/
-
-    overlaps.iter_mut().for_each(|mut o| match o.strand {
-        Strand::Forward => {
-            let beginning = o.tstart.min(o.qstart).min(2500);
-            o.tstart -= beginning;
-            o.qstart -= beginning;
-            let end = (o.tlen - o.tend).min(o.qlen - o.qend).min(2500);
-            o.tend += end;
-            o.qend += end;
-        }
-        Strand::Reverse => {
-            let beginning = o.tstart.min(o.qlen - o.qend).min(2500);
-            o.tstart -= beginning;
-            o.qend += beginning;
-
-            let end = (o.tlen - o.tend).min(o.qstart).min(2500);
-            o.tend += end;
-            o.qstart -= end;
-        }
-    });
-}
-
 fn extend_overlap(overlap: &mut Overlap) {
     match overlap.strand {
         Strand::Forward => {
@@ -324,20 +273,20 @@ fn extend_overlap(overlap: &mut Overlap) {
 }
 
 #[allow(dead_code)]
-pub(crate) fn print_overlaps(overlaps: &[Overlap], reads: &[HAECRecord]) {
-    for overlap in overlaps {
+pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
+    for aln in alignments {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            reads[overlap.qid as usize].id,
-            overlap.qlen,
-            overlap.qstart,
-            overlap.qend,
-            overlap.strand,
-            reads[overlap.tid as usize].id,
-            overlap.tlen,
-            overlap.tstart,
-            overlap.tend,
-            match overlap.cigar {
+            reads[aln.overlap.qid as usize].id,
+            aln.overlap.qlen,
+            aln.overlap.qstart,
+            aln.overlap.qend,
+            aln.overlap.strand,
+            reads[aln.overlap.tid as usize].id,
+            aln.overlap.tlen,
+            aln.overlap.tstart,
+            aln.overlap.tend,
+            match aln.cigar {
                 CigarStatus::Mapped(ref c) => cigar_to_string(c),
                 CigarStatus::Unprocessed | CigarStatus::Unmapped => "".to_string(),
             }

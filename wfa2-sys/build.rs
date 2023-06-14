@@ -9,7 +9,7 @@ const DIRS: &[&str] = &["utils", "system", "alignment", "wavefront"];
 fn main() {
     let mut cfg = cc::Build::new();
 
-    cfg.flag("-march=native");
+    //cfg.flag("-march=native");
     cfg.warnings(false);
 
     let root = Path::new(ROOT);

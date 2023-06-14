@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, RwLock};
 
 use crate::{
     haec_io::HAECRecord,
-    overlaps::{self, CigarStatus, Overlap, Strand},
+    overlaps::{self, Alignment, CigarStatus, Overlap, Strand},
 };
 
 use self::wfa::WFAAligner;
@@ -75,52 +75,52 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
 }
 
 pub fn align_overlaps(
-    overlaps: &[Arc<RwLock<Overlap>>],
+    overlaps: &[Arc<RwLock<Alignment>>],
     reads: &[HAECRecord],
     aligner: &mut WFAAligner,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
 ) {
     overlaps.iter().for_each(|overlap| {
-        let mut o = overlap.write().unwrap();
-        if !matches!(o.cigar, CigarStatus::Unprocessed) {
+        let mut aln = overlap.write().unwrap();
+        if !matches!(aln.cigar, CigarStatus::Unprocessed) {
             return;
         }
 
-        let qlen = o.qend as usize - o.qstart as usize;
-        if o.strand == overlaps::Strand::Forward {
-            reads[o.qid as usize]
+        let qlen = aln.overlap.qend as usize - aln.overlap.qstart as usize;
+        if aln.overlap.strand == overlaps::Strand::Forward {
+            reads[aln.overlap.qid as usize]
                 .seq
-                .get_subseq(o.qstart as usize..o.qend as usize, qbuf);
+                .get_subseq(aln.overlap.qstart as usize..aln.overlap.qend as usize, qbuf);
         } else {
-            reads[o.qid as usize]
+            reads[aln.overlap.qid as usize]
                 .seq
-                .get_rc_subseq(o.qstart as usize..o.qend as usize, qbuf);
+                .get_rc_subseq(aln.overlap.qstart as usize..aln.overlap.qend as usize, qbuf);
         };
 
-        let tlen = o.tend as usize - o.tstart as usize;
-        reads[o.tid as usize]
+        let tlen = aln.overlap.tend as usize - aln.overlap.tstart as usize;
+        reads[aln.overlap.tid as usize]
             .seq
-            .get_subseq(o.tstart as usize..o.tend as usize, tbuf);
+            .get_subseq(aln.overlap.tstart as usize..aln.overlap.tend as usize, tbuf);
 
         let align_result = aligner.align(&qbuf[..qlen], &tbuf[..tlen]);
         if let Some(result) = align_result {
-            o.cigar = CigarStatus::Mapped(result.cigar);
+            aln.cigar = CigarStatus::Mapped(result.cigar);
 
-            o.tstart += result.tstart;
-            o.tend -= result.tend;
+            aln.overlap.tstart += result.tstart;
+            aln.overlap.tend -= result.tend;
 
-            match o.strand {
+            match aln.overlap.strand {
                 overlaps::Strand::Forward => {
-                    o.qstart += result.qstart;
-                    o.qend -= result.qend;
+                    aln.overlap.qstart += result.qstart;
+                    aln.overlap.qend -= result.qend;
                 }
                 overlaps::Strand::Reverse => {
-                    o.qstart += result.qend;
-                    o.qend -= result.qstart;
+                    aln.overlap.qstart += result.qend;
+                    aln.overlap.qend -= result.qstart;
                 }
             }
         } else {
-            o.cigar = CigarStatus::Unmapped;
+            aln.cigar = CigarStatus::Unmapped;
             return;
         }
     })

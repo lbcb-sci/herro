@@ -5,7 +5,7 @@ use features::extract_features;
 use haec_io::HAECRecord;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 use inference::InputData;
-use overlaps::Overlap;
+use overlaps::{Alignment, Overlap};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use thread_local::ThreadLocal;
@@ -31,7 +31,8 @@ mod inference;
 mod overlaps;
 mod windowing;
 
-pub type ReadOverlaps = Vec<Arc<RwLock<Overlap>>>;
+pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
+const READS_BATCH_SIZE: usize = 50_000;
 
 pub fn error_correction<T, U, V>(
     reads_path: T,
@@ -62,11 +63,11 @@ pub fn error_correction<T, U, V>(
     let batches = build_batches(read_to_overlaps);
 
     let (feats_sender, feats_receiver) = bounded(1000);
-    let (pred_sender, pred_receiver) = bounded(1000);
+    //let (pred_sender, pred_receiver) = bounded(1000);
 
     thread::scope(|s| {
         // Create inference thread for every GPU
-        devices.iter().for_each(|d| {
+        /*devices.iter().for_each(|d| {
             let fr = feats_receiver.clone();
             let ps = pred_sender.clone();
 
@@ -78,7 +79,7 @@ pub fn error_correction<T, U, V>(
         drop(pred_sender);
 
         // Create consensus thread
-        s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
+        s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));*/
 
         align_and_extract(batches, &reads, feats_sender, window_size, threads);
     });
@@ -150,7 +151,7 @@ fn build_batches(
     let mut queue = VecDeque::new();
 
     let mut batches = Vec::new();
-    let mut batch = Vec::with_capacity(20_000);
+    let mut batch = Vec::with_capacity(READS_BATCH_SIZE);
 
     // While all the reads haven't been processed
     while unprocessed.len() > 0 {
@@ -163,8 +164,8 @@ fn build_batches(
         let tid = queue.pop_front().unwrap();
         if unprocessed.contains(&tid) {
             // Add all the reads that overlap with this one
-            read_to_overlaps.get(&tid).unwrap().iter().for_each(|o| {
-                let qid = o.read().unwrap().return_other_id(tid);
+            read_to_overlaps.get(&tid).unwrap().iter().for_each(|aln| {
+                let qid = aln.read().unwrap().overlap.return_other_id(tid);
                 queue.push_back(qid);
             });
 
@@ -172,9 +173,9 @@ fn build_batches(
             unprocessed.remove(&tid);
 
             // Emit a new batch
-            if batch.len() >= 20_000 {
+            if batch.len() >= READS_BATCH_SIZE {
                 batches.push(batch);
-                batch = Vec::with_capacity(20_000);
+                batch = Vec::with_capacity(READS_BATCH_SIZE);
             }
         }
     }

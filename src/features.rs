@@ -3,6 +3,7 @@ use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, RwLock};
 
 use crossbeam_channel::Sender;
@@ -15,7 +16,7 @@ use ordered_float::OrderedFloat;
 use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InputData};
-use crate::overlaps::{self, CigarStatus, Overlap, Strand};
+use crate::overlaps::{self, Alignment, CigarStatus, Overlap, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
@@ -43,7 +44,7 @@ fn get_max_ins_for_window(
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
-        let qid = ow.overlap.read().unwrap().return_other_id(tid);
+        let qid = ow.overlap.return_other_id(tid);
         let cigar = ovlps_cigar_map.get(&qid).unwrap()[ow.cigar_start_idx..].iter();
         let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
 
@@ -82,7 +83,7 @@ fn get_features_for_ol_window(
     qbuffer: &mut [u8],
 ) {
     // Handle query sequence
-    let overlap = window.overlap.read().unwrap();
+    let overlap = &window.overlap;
     let (qstart, qend) = if overlap.tid == tid {
         (overlap.qstart, overlap.qend)
     } else {
@@ -267,7 +268,7 @@ fn get_features_for_window(
 
     // Write top-k overlaps for the window
     overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
-        let qid = ow.overlap.read().unwrap().return_other_id(tid);
+        let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
             features.index_axis_mut(Axis(0), i + 1),
             ow,
@@ -296,7 +297,7 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
 pub(crate) fn extract_features(
     rid: u32,
     reads: &[HAECRecord],
-    overlaps: &[Arc<RwLock<Overlap>>],
+    overlaps: &[Arc<RwLock<Alignment>>],
     window_size: u32,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
     sender: Sender<InputData>,
@@ -309,15 +310,16 @@ pub(crate) fn extract_features(
 
     let mut ovlps_cigar_map = HashMap::new();
     for ovlp in overlaps {
-        let overlap = ovlp.read().unwrap();
-        if let CigarStatus::Unmapped = overlap.cigar {
+        let alignment = ovlp.read().unwrap();
+        if let CigarStatus::Unmapped = alignment.cigar {
             continue;
         }
 
+        let overlap = Rc::new(alignment.overlap.clone());
         let qid = overlap.return_other_id(rid);
 
         let mut cigar = get_proper_cigar(
-            overlap.cigar.as_ref().unwrap(),
+            alignment.cigar.as_ref().unwrap(),
             overlap.tid == rid,
             overlap.strand,
         );
@@ -347,13 +349,14 @@ pub(crate) fn extract_features(
         let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]);
 
         //Extract windows
+        let is_target = overlap.tid == rid;
         extract_windows(
             &mut windows,
-            ovlp,
+            overlap,
             &cigar,
             tshift,
             qshift,
-            overlap.tid == rid,
+            is_target,
             window_size,
         );
 
@@ -361,10 +364,10 @@ pub(crate) fn extract_features(
     }
 
     // Create directory for the read
-    //let output_path = Path::new("features").join(&read.id);
-    //create_dir_all(&output_path).expect("Cannot create directory");
+    let output_path = Path::new("features").join(&read.id);
+    create_dir_all(&output_path).expect("Cannot create directory");
 
-    let mut features = Vec::new();
+    //let mut features = Vec::new();
     for i in 0..n_windows {
         if windows[i].len() == 0 {
             continue;
@@ -378,7 +381,7 @@ pub(crate) fn extract_features(
 
         // Filter windows
         windows[i].retain(|ow| {
-            let qid = ow.overlap.read().unwrap().return_other_id(rid);
+            let qid = ow.overlap.return_other_id(rid);
 
             // TODO: Handle CIGAR offsets
             let cigar = ovlps_cigar_map.get(&qid).unwrap();
@@ -389,7 +392,7 @@ pub(crate) fn extract_features(
         // Sort window to take TOP-K
         windows[i].sort_by_key(|ow| {
             let cigar = ovlps_cigar_map
-                .get(&ow.overlap.read().unwrap().return_other_id(rid))
+                .get(&ow.overlap.return_other_id(rid))
                 .unwrap();
 
             let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
@@ -417,18 +420,18 @@ pub(crate) fn extract_features(
             qbuf,
         );
 
-        /*let qids: Vec<&str> = windows[i]
-        .iter()
-        .map(|ow| reads[ow.overlap.return_other_id(*rid) as usize].id.as_str())
-        .collect();*/
-        features.push((i as u16, window));
+        let qids: Vec<&str> = windows[i]
+            .iter()
+            .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
+            .collect();
+        //features.push((i as u16, window));
 
         //TODO handle Result
-        //output_features(&output_path, i, &qids, &window);
+        output_features(&output_path, i, &qids, &window);
     }
 
-    let features = prepare_examples(rid, features);
-    sender.send(features).unwrap();
+    //let features = prepare_examples(rid, features);
+    //sender.send(features).unwrap();
 }
 
 fn output_features<P: AsRef<Path>>(
