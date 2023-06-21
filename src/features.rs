@@ -364,10 +364,10 @@ pub(crate) fn extract_features(
     }
 
     // Create directory for the read
-    let output_path = Path::new("features").join(&read.id);
-    create_dir_all(&output_path).expect("Cannot create directory");
+    //let output_path = Path::new("features").join(&read.id);
+    //create_dir_all(&output_path).expect("Cannot create directory");
 
-    //let mut features = Vec::new();
+    let mut features = Vec::new();
     for i in 0..n_windows {
         if windows[i].len() == 0 {
             continue;
@@ -420,18 +420,18 @@ pub(crate) fn extract_features(
             qbuf,
         );
 
-        let qids: Vec<&str> = windows[i]
-            .iter()
-            .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
-            .collect();
-        //features.push((i as u16, window));
+        /*let qids: Vec<&str> = windows[i]
+        .iter()
+        .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
+        .collect();*/
+        features.push((i as u16, window));
 
         //TODO handle Result
-        output_features(&output_path, i, &qids, &window);
+        //output_features(&output_path, i, &qids, &window);
     }
 
-    //let features = prepare_examples(rid, features);
-    //sender.send(features).unwrap();
+    let features = prepare_examples(rid, features);
+    sender.send(features).unwrap();
 }
 
 fn output_features<P: AsRef<Path>>(

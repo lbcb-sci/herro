@@ -63,11 +63,11 @@ pub fn error_correction<T, U, V>(
     let batches = build_batches(read_to_overlaps);
 
     let (feats_sender, feats_receiver) = bounded(1000);
-    //let (pred_sender, pred_receiver) = bounded(1000);
+    let (pred_sender, pred_receiver) = bounded(1000);
 
     thread::scope(|s| {
         // Create inference thread for every GPU
-        /*devices.iter().for_each(|d| {
+        devices.iter().for_each(|d| {
             let fr = feats_receiver.clone();
             let ps = pred_sender.clone();
 
@@ -79,7 +79,7 @@ pub fn error_correction<T, U, V>(
         drop(pred_sender);
 
         // Create consensus thread
-        s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));*/
+        s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
         align_and_extract(batches, &reads, feats_sender, window_size, threads);
     });
