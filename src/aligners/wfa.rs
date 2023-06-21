@@ -140,23 +140,23 @@ fn get_alignment_results(cigar: &[u8]) -> Option<AlignmentResult> {
                 }
             }
             Some('X') => {
-                tstart += cm as u32;
-                qstart += cm as u32;
+                tend += cm as u32;
+                qend += cm as u32;
                 cm = 0;
 
                 tend += 1;
                 qend += 1;
             }
             Some('D') => {
-                tstart += cm as u32;
-                qstart += cm as u32;
+                tend += cm as u32;
+                qend += cm as u32;
                 cm = 0;
 
                 tend += 1;
             }
             Some('I') => {
-                tstart += cm as u32;
-                qstart += cm as u32;
+                tend += cm as u32;
+                qend += cm as u32;
                 cm = 0;
 
                 qend += 1;
