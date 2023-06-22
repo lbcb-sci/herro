@@ -183,7 +183,7 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
             .unwrap();
 
         // Get number of target positions for each window
-        let lens: Vec<_> = match inputs[2] {
+        let lens: Vec<_> = match inputs[3] {
             IValue::TensorList(ref tps) => tps.iter().map(|t| t.size1().unwrap()).collect(),
             _ => unreachable!(),
         };
