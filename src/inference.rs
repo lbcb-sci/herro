@@ -16,7 +16,7 @@ use crate::haec_io::HAECRecord;
 const BATCH_SIZE: usize = 16;
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
-const QUAL_MAX_VAL: f32 = 73.;
+const QUAL_MAX_VAL: f32 = 126.;
 const PATCH_SIZE: usize = 16;
 
 lazy_static! {
