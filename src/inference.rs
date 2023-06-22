@@ -142,6 +142,7 @@ fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
 
     let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
     let quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let lengths = Tensor::empty(&[batch.len() as i64], (tch::Kind::Int, device));
     let mut tps = Vec::new();
 
     for (idx, f) in batch.iter().enumerate() {
@@ -154,12 +155,15 @@ fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.quals).unwrap());
 
+        lengths.i(idx as i64).fill_(l as i64);
+
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
     let inputs = vec![
         IValue::Tensor(bases),
         IValue::Tensor(quals),
+        IValue::Tensor(lengths),
         IValue::TensorList(tps),
     ];
 
