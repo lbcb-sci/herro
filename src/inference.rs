@@ -17,6 +17,7 @@ const BATCH_SIZE: usize = 16;
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 73.;
+const PATCH_SIZE: usize = 16;
 
 lazy_static! {
     static ref BASES_MAP: [u8; 128] = {
@@ -127,12 +128,50 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     inputs
 }
 
+fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
+    // Patch-aware padding
+    // Get longest sequence
+    let length = batch.iter().map(|f| f.bases.len_of(Axis(0))).max().unwrap();
+    let length = ((length + PATCH_SIZE - 1) / PATCH_SIZE) * PATCH_SIZE;
+
+    let size = [
+        batch.len() as i64,
+        length as i64,
+        batch[0].bases.len_of(Axis(1)) as i64,
+    ]; // [B, L, R]
+
+    let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
+    let quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let mut tps = Vec::new();
+
+    for (idx, f) in batch.iter().enumerate() {
+        let l = f.bases.len_of(Axis(0));
+
+        bases
+            .i((idx as i64, ..l as i64, ..))
+            .copy_(&Tensor::try_from(&f.bases).unwrap());
+        quals
+            .i((idx as i64, ..l as i64, ..))
+            .copy_(&Tensor::try_from(&f.quals).unwrap());
+
+        tps.push(Tensor::from_slice(&f.target_positions));
+    }
+
+    let inputs = vec![
+        IValue::Tensor(bases),
+        IValue::Tensor(quals),
+        IValue::TensorList(tps),
+    ];
+
+    inputs
+}
+
 fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputData {
     let mut logits = Vec::new();
 
     for i in (0..data.windows.len()).step_by(BATCH_SIZE) {
         let batch = &data.windows[i..(i + BATCH_SIZE).min(data.windows.len())];
-        let inputs = collate(batch, device);
+        let inputs = collate2(batch, device);
 
         let out = model
             .forward_is(&inputs)
