@@ -10,6 +10,7 @@ members = [".", "wfa2-sys"]
 
 [profile.release]
 lto = "thin"
+panic = "abort"
 
 [dependencies]
 wfa2-sys = {path = "wfa2-sys"}
