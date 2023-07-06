@@ -160,9 +160,6 @@ fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
-    bases.save("resources/bases_tmp.pt").unwrap();
-    quals.save("resources/quals.tmp.pt").unwrap();
-
     let inputs = vec![
         IValue::Tensor(bases),
         IValue::Tensor(quals),
