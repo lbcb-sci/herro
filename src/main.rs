@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::error_correction;
+use ont_haec_rs::{error_correction, generate_features};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -44,8 +44,22 @@ fn main() {
 
     match &cli.command {
         Commands::Features => {
-            unimplemented!()
+            generate_features(
+                &cli.reads,
+                &cli.overlaps,
+                &cli.output,
+                cli.feat_gen_threads,
+                cli.window_size,
+            );
         }
-        Commands::Inference(args) => unimplemented!(),
+        Commands::Inference(args) => error_correction(
+            &cli.reads,
+            &cli.overlaps,
+            &args.model,
+            &cli.output,
+            cli.feat_gen_threads,
+            cli.window_size,
+            &args.devices,
+        ),
     }
 }
