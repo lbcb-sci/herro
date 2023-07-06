@@ -1,6 +1,6 @@
 use aligners::align_overlaps;
 use crossbeam_channel::{bounded, Sender};
-use features::extract_features;
+use features::{extract_features, FeaturesOutput};
 
 use haec_io::HAECRecord;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
@@ -21,6 +21,7 @@ use std::{
 
 use crate::{
     aligners::wfa::WFAAligner,
+    features::{FeatsGenOutput, InferenceOutput},
     inference::{consensus_worker, inference_worker},
 };
 
@@ -33,6 +34,37 @@ mod windowing;
 
 pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
 const READS_BATCH_SIZE: usize = 50_000;
+
+pub fn generate_features<T, U, V>(
+    reads: T,
+    overlaps: U,
+    output_path: V,
+    feat_gen_threads: usize,
+    window_size: u32,
+) where
+    T: AsRef<Path>,
+    U: AsRef<Path>,
+    V: AsRef<Path> + Send + Sync + Clone,
+{
+    // Get fastq reads
+    let reads = haec_io::get_reads(reads, window_size);
+    let name_to_id: HashMap<_, _> = reads
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.id.as_str(), i as u32))
+        .collect();
+    eprintln!("Parsed {} reads.", reads.len());
+
+    // Parse, filteer and extend overlaps
+    let read_to_overlaps = overlaps::parse_paf(overlaps, &name_to_id);
+
+    // Build batches
+    let batches = build_batches(read_to_overlaps);
+
+    let feats_output = FeatsGenOutput::new(output_path);
+
+    align_and_extract(batches, &reads, feats_output, window_size, feat_gen_threads);
+}
 
 pub fn error_correction<T, U, V>(
     reads_path: T,
@@ -63,8 +95,9 @@ pub fn error_correction<T, U, V>(
     let batches = build_batches(read_to_overlaps);
 
     let (feats_sender, feats_receiver) = bounded(1000);
-    let (pred_sender, pred_receiver) = bounded(1000);
+    let feats_output = InferenceOutput::new(feats_sender);
 
+    let (pred_sender, pred_receiver) = bounded(1000);
     thread::scope(|s| {
         // Create inference thread for every GPU
         devices.iter().for_each(|d| {
@@ -81,19 +114,21 @@ pub fn error_correction<T, U, V>(
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
-        align_and_extract(batches, &reads, feats_sender, window_size, threads);
+        align_and_extract(batches, &reads, feats_output, window_size, threads);
     });
 
     //extract_features(&reads, &overlaps, window_size, feats_sender);
 }
 
-fn align_and_extract(
+fn align_and_extract<'a, T>(
     batches: Vec<Vec<(u32, ReadOverlaps)>>,
-    reads: &[HAECRecord],
-    feats_sender: Sender<InputData>,
+    reads: &'a [HAECRecord],
+    feats_output: T,
     window_size: u32,
     threads: usize,
-) {
+) where
+    T: FeaturesOutput<'a> + Clone + Send + Sync,
+{
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads)
         .build_global()
@@ -103,6 +138,7 @@ fn align_and_extract(
 
     let aligners = Arc::new(ThreadLocal::new());
     let sequences = Arc::new(ThreadLocal::new());
+    let fo_tl = Arc::new(ThreadLocal::new());
 
     let n_batches = batches.len();
     batches
@@ -110,8 +146,6 @@ fn align_and_extract(
         .progress_count(n_batches as u64)
         .for_each(|batch| {
             let batch_len = batch.len();
-
-            let fs_batch = feats_sender.clone();
 
             batch
                 .into_par_iter()
@@ -124,6 +158,7 @@ fn align_and_extract(
                             RefCell::new(vec![0u8; max_len]),
                         )
                     });
+                    let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
 
                     align_overlaps(
                         &overlaps,
@@ -138,7 +173,7 @@ fn align_and_extract(
                         &overlaps,
                         window_size,
                         (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                        fs_batch.clone(),
+                        &mut *fo.borrow_mut(),
                     )
                 });
         });

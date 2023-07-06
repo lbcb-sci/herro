@@ -4,7 +4,7 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::Sender;
 
@@ -16,7 +16,7 @@ use ordered_float::OrderedFloat;
 use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InputData};
-use crate::overlaps::{self, Alignment, CigarStatus, Overlap, Strand};
+use crate::overlaps::{self, Alignment, CigarStatus, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
@@ -294,13 +294,13 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
     calculate_accuracy(cigar) >= 0.85 && !long_indel
 }
 
-pub(crate) fn extract_features(
+pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     rid: u32,
-    reads: &[HAECRecord],
+    reads: &'a [HAECRecord],
     overlaps: &[Arc<RwLock<Alignment>>],
     window_size: u32,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
-    sender: Sender<InputData>,
+    feats_output: &mut T,
 ) {
     let read = &reads[rid as usize];
 
@@ -367,7 +367,7 @@ pub(crate) fn extract_features(
     //let output_path = Path::new("features").join(&read.id);
     //create_dir_all(&output_path).expect("Cannot create directory");
 
-    let mut features = Vec::new();
+    feats_output.init(rid, &read.id);
     for i in 0..n_windows {
         if windows[i].len() == 0 {
             continue;
@@ -420,23 +420,20 @@ pub(crate) fn extract_features(
             qbuf,
         );
 
-        /*let qids: Vec<&str> = windows[i]
-        .iter()
-        .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
-        .collect();*/
-        features.push((i as u16, window));
+        let qids: Vec<&str> = windows[i]
+            .iter()
+            .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
+            .collect();
 
-        //TODO handle Result
-        //output_features(&output_path, i, &qids, &window);
+        feats_output.update(window, qids, i as u16);
     }
 
-    let features = prepare_examples(rid, features);
-    sender.send(features).unwrap();
+    feats_output.emit();
 }
 
 fn output_features<P: AsRef<Path>>(
     path: P,
-    window_id: usize,
+    window_id: u16,
     ids: &[&str],
     features: &Array3<u8>,
 ) -> Result<()> {
@@ -452,4 +449,92 @@ fn output_features<P: AsRef<Path>>(
     features.write_npy(file).unwrap();
 
     Ok(())
+}
+
+pub(crate) trait FeaturesOutput<'a> {
+    fn init<'b>(&mut self, rid: u32, rname: &'b str)
+    where
+        'b: 'a;
+    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16);
+    fn emit(&mut self);
+}
+
+#[derive(Clone)]
+pub(crate) struct FeatsGenOutput<'a, T>
+where
+    T: AsRef<Path> + Clone,
+{
+    base_path: T,
+    rname: Option<&'a str>,
+}
+
+impl<T> FeatsGenOutput<'_, T>
+where
+    T: AsRef<Path> + Clone,
+{
+    pub(crate) fn new(path: T) -> Self {
+        Self {
+            base_path: path,
+            rname: None,
+        }
+    }
+}
+
+impl<'a, T> FeaturesOutput<'a> for FeatsGenOutput<'a, T>
+where
+    T: AsRef<Path> + Clone,
+{
+    fn init<'b>(&mut self, _rid: u32, rname: &'b str)
+    where
+        'b: 'a,
+    {
+        self.rname.replace(rname);
+    }
+
+    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16) {
+        let output_path = self.base_path.as_ref().join(self.rname.unwrap());
+        create_dir_all(&output_path).expect("Cannot create directory");
+
+        output_features(&output_path, wid, &ids, &features);
+    }
+
+    fn emit(&mut self) {
+        self.rname = None;
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct InferenceOutput {
+    sender: Sender<InputData>,
+    rid: u32,
+    features: Vec<(u16, Array3<u8>)>,
+}
+
+impl InferenceOutput {
+    pub(crate) fn new(sender: Sender<InputData>) -> Self {
+        Self {
+            sender,
+            rid: u32::MAX,
+            features: Vec::new(),
+        }
+    }
+}
+
+impl<'a> FeaturesOutput<'a> for InferenceOutput {
+    fn init<'b>(&mut self, rid: u32, rname: &'b str)
+    where
+        'b: 'a,
+    {
+        self.rid = rid;
+        self.features.clear();
+    }
+
+    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16) {
+        self.features.push((wid, features));
+    }
+
+    fn emit(&mut self) {
+        let data = prepare_examples(self.rid, &mut self.features);
+        self.sender.send(data).unwrap();
+    }
 }

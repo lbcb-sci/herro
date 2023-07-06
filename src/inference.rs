@@ -103,7 +103,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     ]; // [B, L, R]
 
     let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
-    let quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let quals = Tensor::ones(&size, (tch::Kind::Float, device));
     let mut tps = Vec::new();
 
     for (idx, f) in batch.iter().enumerate() {
@@ -141,7 +141,7 @@ fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     ]; // [B, L, R]
 
     let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
-    let quals = Tensor::zeros(&size, (tch::Kind::Float, device));
+    let quals = Tensor::ones(&size, (tch::Kind::Float, device));
     let lengths = Tensor::empty(&[batch.len() as i64], (tch::Kind::Int, device));
     let mut tps = Vec::new();
 
@@ -155,10 +155,13 @@ fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.quals).unwrap());
 
-        lengths.i(idx as i64).fill_(l as i64);
+        let _ = lengths.i(idx as i64).fill_(l as i64);
 
         tps.push(Tensor::from_slice(&f.target_positions));
     }
+
+    bases.save("resources/bases_tmp.pt").unwrap();
+    quals.save("resources/quals.tmp.pt").unwrap();
 
     let inputs = vec![
         IValue::Tensor(bases),
@@ -179,7 +182,7 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
 
         let out = model
             .forward_is(&inputs)
-            .map(|v| Tensor::try_from(v).unwrap())
+            .map(|v| Tensor::try_from(v).unwrap().to(tch::Device::Cpu))
             .unwrap();
 
         // Get number of target positions for each window
@@ -211,9 +214,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
 
-    let _guard = tch::no_grad_guard();
-
-    loop {
+    tch::no_grad(|| loop {
         let data = match input_channel.recv() {
             Ok(data) => data,
             Err(_) => break,
@@ -221,13 +222,13 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
         let output = inference(data, &model, device);
         output_channel.send(output).unwrap();
-    }
+    });
 }
 
-pub(crate) fn prepare_examples(rid: u32, features: Vec<(u16, Array3<u8>)>) -> InputData {
+pub(crate) fn prepare_examples(rid: u32, features: &mut [(u16, Array3<u8>)]) -> InputData {
     let windows: Vec<_> = features
-        .into_iter()
-        .map(|(wid, mut feats)| {
+        .iter_mut()
+        .map(|(wid, ref mut feats)| {
             // Transpose: [R, L, 2] -> [L, R, 2]
             feats.swap_axes(1, 0);
 
@@ -245,7 +246,7 @@ pub(crate) fn prepare_examples(rid: u32, features: Vec<(u16, Array3<u8>)>) -> In
                 .index_axis(Axis(2), 1)
                 .mapv(|q| (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL));
 
-            Features::new(wid, bases, quals, tps)
+            Features::new(*wid, bases, quals, tps)
         })
         .collect();
 
@@ -388,8 +389,11 @@ mod tests {
         let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         // Load model
-        let mut model =
-            tch::CModule::load_on_device(&resources.join("resources/model.pt"), device).unwrap();
+        let mut model = tch::CModule::load_on_device(
+            &resources.join("resources/patched_transformer-run2.pt"),
+            device,
+        )
+        .unwrap();
         model.set_eval();
 
         // Get files list
@@ -408,7 +412,7 @@ mod tests {
         files.sort();
 
         // Create input data
-        let features = files
+        let mut features: Vec<_> = files
             .into_iter()
             .enumerate()
             .map(|(i, p)| {
@@ -416,7 +420,7 @@ mod tests {
                 (i as u16, feats)
             })
             .collect();
-        let input_data = prepare_examples(0, features);
+        let input_data = prepare_examples(0, &mut features);
 
         let output = inference(input_data, &model, device);
         let predicted: Array1<f32> = output
@@ -458,7 +462,7 @@ mod tests {
         files.sort();
 
         // Create input data
-        let features = files
+        let mut features: Vec<_> = files
             .into_iter()
             .enumerate()
             .map(|(i, p)| {
@@ -466,7 +470,7 @@ mod tests {
                 (i as u16, feats)
             })
             .collect();
-        let input_data = prepare_examples(0, features);
+        let input_data = prepare_examples(0, &mut features);
 
         let output = inference(input_data, &model, device);
         let predicted: Array1<f32> = output

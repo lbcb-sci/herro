@@ -1,34 +1,51 @@
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
 use ont_haec_rs::error_correction;
 
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
-    reads_path: String,
-    paf_path: String,
-    #[arg(short = 'w', default_value = "4096")]
+    #[command(subcommand)]
+    command: Commands,
+
+    #[arg(global = true)]
+    reads: String,
+
+    #[arg(global = true)]
+    overlaps: String,
+
+    #[arg(short = 'w', default_value = "4096", global = true)]
     window_size: u32,
-    #[arg(short = 't', default_value = "1")]
-    threads: usize,
-    #[arg(short = 'd', value_delimiter = ',', default_value = "0")]
-    devices: Vec<usize>,
-    #[arg(short = 'o', default_value = "features")]
+
+    #[arg(short = 't', default_value = "1", global = true)]
+    feat_gen_threads: usize,
+
+    #[arg(global = true)]
     output: String,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Features,
+    Inference(InferenceArgs),
+}
+
+#[derive(Args)]
+struct InferenceArgs {
     #[arg(short = 'm')]
     model: String,
+
+    #[arg(short = 'd', value_delimiter = ',', default_value = "0")]
+    devices: Vec<usize>,
 }
 
 fn main() {
     let cli = Cli::parse();
 
-    error_correction(
-        &cli.reads_path,
-        &cli.paf_path,
-        &cli.model,
-        &cli.output,
-        cli.threads,
-        cli.window_size,
-        &cli.devices,
-    );
+    match &cli.command {
+        Commands::Features => {
+            unimplemented!()
+        }
+        Commands::Inference(args) => unimplemented!(),
+    }
 }
