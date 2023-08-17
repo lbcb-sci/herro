@@ -136,7 +136,7 @@ fn align_and_extract<'a, T>(
 
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
-    let aligners = Arc::new(ThreadLocal::new());
+    //let aligners = Arc::new(ThreadLocal::new());
     let sequences = Arc::new(ThreadLocal::new());
     let fo_tl = Arc::new(ThreadLocal::new());
 
@@ -151,7 +151,7 @@ fn align_and_extract<'a, T>(
                 .into_par_iter()
                 .progress_count(batch_len as u64)
                 .for_each(|(rid, overlaps)| {
-                    let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
+                    //let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
                     let (target, query) = sequences.get_or(|| {
                         (
                             RefCell::new(vec![0u8; max_len]),
@@ -160,12 +160,12 @@ fn align_and_extract<'a, T>(
                     });
                     let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
 
-                    align_overlaps(
+                    /*align_overlaps(
                         &overlaps,
                         &reads,
                         &mut aligner.borrow_mut(),
                         (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                    );
+                    );*/
 
                     extract_features(
                         rid,

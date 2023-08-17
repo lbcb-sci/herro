@@ -27,6 +27,7 @@ ndarray-npy = "~0.8.1"
 tch = "0.13.0"
 crossbeam-channel = "~0.5.8"
 rustc-hash = "~1.1.0"
+regex = "~1.9.1"
 
 [dev-dependencies]
 approx = "~0.5.1"

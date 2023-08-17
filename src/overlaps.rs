@@ -1,6 +1,8 @@
+use lazy_static::lazy_static;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
+use regex::Regex;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -174,6 +176,9 @@ pub fn parse_paf<P: AsRef<Path>>(
         let tstart: u32 = data.next().unwrap().parse().unwrap();
         let tend: u32 = data.next().unwrap().parse().unwrap();
 
+        let cigar = data.last().unwrap();
+        let cigar = parse_cigar(&cigar[5..]);
+
         buffer.clear();
         if tid == qid {
             // Cannot have self-overlaps
@@ -185,7 +190,24 @@ pub fn parse_paf<P: AsRef<Path>>(
         }
         processed.insert((qid, tid));
 
-        if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
+        let mut alignment = Alignment::new(Overlap::new(
+            qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend,
+        ));
+        alignment.cigar = CigarStatus::Mapped(cigar);
+
+        let overlap = Arc::new(RwLock::new(alignment));
+
+        read_to_overlaps
+            .entry(tid)
+            .or_insert_with(|| Vec::new())
+            .push(Arc::clone(&overlap));
+
+        read_to_overlaps
+            .entry(qid)
+            .or_insert_with(|| Vec::new())
+            .push(overlap);
+
+        /*if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
             let mut alignment = Alignment::new(Overlap::new(
                 qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend,
             ));
@@ -201,7 +223,7 @@ pub fn parse_paf<P: AsRef<Path>>(
                 .entry(qid)
                 .or_insert_with(|| Vec::new())
                 .push(overlap);
-        }
+        }*/
     }
 
     read_to_overlaps
@@ -292,4 +314,27 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
             }
         )
     }
+}
+
+lazy_static! {
+    static ref CIGAR_PATTERN: Regex = Regex::new(r"(\d+)([MIDNSHP=X])").unwrap();
+}
+
+fn parse_cigar(string: &str) -> Vec<CigarOp> {
+    CIGAR_PATTERN
+        .captures_iter(string)
+        .map(|c| {
+            let (_, [l, op]) = c.extract();
+
+            let l = l.parse::<u32>().unwrap();
+            match op {
+                "M" => CigarOp::Match(l),
+                "I" => CigarOp::Insertion(l),
+                "D" => CigarOp::Deletion(l),
+                "X" => CigarOp::Mismatch(l),
+                "=" => CigarOp::Match(l),
+                _ => panic!("Invalid CIGAR operation."),
+            }
+        })
+        .collect()
 }
