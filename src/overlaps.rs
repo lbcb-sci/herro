@@ -1,24 +1,22 @@
 use lazy_static::lazy_static;
+use regex::bytes::RegexBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
-use regex::Regex;
+use regex::bytes::Regex;
+use serde::Deserialize;
+use serde::Serialize;
 use std::fmt;
-use std::sync::Arc;
-use std::sync::Mutex;
-use std::sync::RwLock;
-use std::{
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
-};
+use std::io::Read;
+
+use std::io::{BufRead, BufReader};
 
 use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::HAECRecord;
 
 const OL_THRESHOLD: u32 = 2500;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Strand {
     Forward,
     Reverse,
@@ -51,7 +49,7 @@ impl CigarStatus {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -102,18 +100,15 @@ impl Overlap {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Alignment {
     pub overlap: Overlap,
-    pub cigar: CigarStatus,
+    pub cigar: Vec<CigarOp>,
 }
 
 impl Alignment {
-    pub fn new(overlap: Overlap) -> Self {
-        Alignment {
-            overlap: overlap,
-            cigar: CigarStatus::Unprocessed,
-        }
+    pub fn new(overlap: Overlap, cigar: Vec<CigarOp>) -> Self {
+        Alignment { overlap, cigar }
     }
 }
 
@@ -131,16 +126,13 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-pub fn parse_paf<P: AsRef<Path>>(
-    path: P,
-    name_to_id: &HashMap<&str, u32>,
-) -> HashMap<u32, Vec<Arc<RwLock<Alignment>>>> {
-    let file = File::open(path).expect("Cannot open overlap file.");
-    let mut reader = BufReader::new(file);
+pub fn parse_paf(read: impl Read, name_to_id: &HashMap<&str, u32>) -> Vec<Alignment> {
+    let mut reader = BufReader::new(read);
 
     let mut buffer = String::new();
     let mut processed = HashSet::default();
-    let mut read_to_overlaps = HashMap::default();
+
+    let mut alignments = Vec::new();
     while let Ok(len) = reader.read_line(&mut buffer) {
         if len == 0 {
             break;
@@ -190,43 +182,12 @@ pub fn parse_paf<P: AsRef<Path>>(
         }
         processed.insert((qid, tid));
 
-        let mut alignment = Alignment::new(Overlap::new(
-            qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend,
-        ));
-        alignment.cigar = CigarStatus::Mapped(cigar);
-
-        let overlap = Arc::new(RwLock::new(alignment));
-
-        read_to_overlaps
-            .entry(tid)
-            .or_insert_with(|| Vec::new())
-            .push(Arc::clone(&overlap));
-
-        read_to_overlaps
-            .entry(qid)
-            .or_insert_with(|| Vec::new())
-            .push(overlap);
-
-        /*if is_valid_overlap(qlen, qstart, qend, strand, tlen, tstart, tend) {
-            let mut alignment = Alignment::new(Overlap::new(
-                qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend,
-            ));
-            extend_overlap(&mut alignment.overlap);
-            let overlap = Arc::new(RwLock::new(alignment));
-
-            read_to_overlaps
-                .entry(tid)
-                .or_insert_with(|| Vec::new())
-                .push(Arc::clone(&overlap));
-
-            read_to_overlaps
-                .entry(qid)
-                .or_insert_with(|| Vec::new())
-                .push(overlap);
-        }*/
+        let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
+        let alignment = Alignment::new(overlap, cigar);
+        alignments.push(alignment);
     }
 
-    read_to_overlaps
+    alignments
 }
 
 fn is_valid_overlap(
@@ -270,30 +231,6 @@ fn is_valid_overlap(
     false
 }
 
-fn extend_overlap(overlap: &mut Overlap) {
-    match overlap.strand {
-        Strand::Forward => {
-            let beginning = overlap.tstart.min(overlap.qstart).min(2500);
-            overlap.tstart -= beginning;
-            overlap.qstart -= beginning;
-            let end = (overlap.tlen - overlap.tend)
-                .min(overlap.qlen - overlap.qend)
-                .min(2500);
-            overlap.tend += end;
-            overlap.qend += end;
-        }
-        Strand::Reverse => {
-            let beginning = overlap.tstart.min(overlap.qlen - overlap.qend).min(2500);
-            overlap.tstart -= beginning;
-            overlap.qend += beginning;
-
-            let end = (overlap.tlen - overlap.tend).min(overlap.qstart).min(2500);
-            overlap.tend += end;
-            overlap.qstart -= end;
-        }
-    }
-}
-
 #[allow(dead_code)]
 pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
     for aln in alignments {
@@ -308,31 +245,31 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
             aln.overlap.tlen,
             aln.overlap.tstart,
             aln.overlap.tend,
-            match aln.cigar {
-                CigarStatus::Mapped(ref c) => cigar_to_string(c),
-                CigarStatus::Unprocessed | CigarStatus::Unmapped => "".to_string(),
-            }
+            cigar_to_string(&aln.cigar),
         )
     }
 }
 
 lazy_static! {
-    static ref CIGAR_PATTERN: Regex = Regex::new(r"(\d+)([MIDNSHP=X])").unwrap();
+    static ref CIGAR_PATTERN: Regex = RegexBuilder::new(r"(\d+)([MIDNSHP=X])")
+        .unicode(false)
+        .build()
+        .unwrap();
 }
 
 fn parse_cigar(string: &str) -> Vec<CigarOp> {
     CIGAR_PATTERN
-        .captures_iter(string)
+        .captures_iter(string.as_bytes())
         .map(|c| {
             let (_, [l, op]) = c.extract();
 
-            let l = l.parse::<u32>().unwrap();
+            let l = l.iter().fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
             match op {
-                "M" => CigarOp::Match(l),
-                "I" => CigarOp::Insertion(l),
-                "D" => CigarOp::Deletion(l),
-                "X" => CigarOp::Mismatch(l),
-                "=" => CigarOp::Match(l),
+                b"M" => CigarOp::Match(l),
+                b"I" => CigarOp::Insertion(l),
+                b"D" => CigarOp::Deletion(l),
+                b"X" => CigarOp::Mismatch(l),
+                b"=" => CigarOp::Match(l),
                 _ => panic!("Invalid CIGAR operation."),
             }
         })

@@ -297,7 +297,7 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
 pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     rid: u32,
     reads: &'a [HAECRecord],
-    overlaps: &[Arc<RwLock<Alignment>>],
+    overlaps: &[&Alignment],
     window_size: u32,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
     feats_output: &mut T,
@@ -309,20 +309,11 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let mut windows = vec![Vec::new(); n_windows];
 
     let mut ovlps_cigar_map = HashMap::new();
-    for ovlp in overlaps {
-        let alignment = ovlp.read().unwrap();
-        if let CigarStatus::Unmapped = alignment.cigar {
-            continue;
-        }
-
+    for alignment in overlaps {
         let overlap = Rc::new(alignment.overlap.clone());
         let qid = overlap.return_other_id(rid);
 
-        let mut cigar = get_proper_cigar(
-            alignment.cigar.as_ref().unwrap(),
-            overlap.tid == rid,
-            overlap.strand,
-        );
+        let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
 
         // TODO - get proper target and query
         let (tstart, tend, qstart, qend) = if overlap.tid == rid {

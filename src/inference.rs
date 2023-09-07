@@ -254,7 +254,7 @@ fn consensus(
     data: OutputData,
     read: &HAECRecord,
     window_size: usize,
-    buffer: &mut [u8],
+    buffer: &mut Vec<u8>,
 ) -> Vec<u8> {
     let windows: HashMap<_, (_, _)> = data
         .windows

@@ -1,16 +1,14 @@
 use itertools::Itertools;
-use std::sync::{Arc, Mutex, RwLock};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     haec_io::HAECRecord,
     overlaps::{self, Alignment, CigarStatus, Overlap, Strand},
 };
 
-use self::wfa::WFAAligner;
-
 pub mod wfa;
 
-#[derive(Debug, PartialEq, Copy, Clone, Eq)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq, Serialize, Deserialize)]
 pub enum CigarOp {
     Match(u32),
     Mismatch(u32),
@@ -74,7 +72,7 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
 
-pub fn align_overlaps(
+/*pub fn align_overlaps(
     overlaps: &[Arc<RwLock<Alignment>>],
     reads: &[HAECRecord],
     aligner: &mut WFAAligner,
@@ -124,7 +122,7 @@ pub fn align_overlaps(
             return;
         }
     })
-}
+}*/
 
 pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
