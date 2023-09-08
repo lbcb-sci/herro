@@ -1,22 +1,23 @@
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap as HashMap, FxHasher};
+use std::error::Error;
 use std::fs::{create_dir_all, File};
+use std::hash::Hasher;
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, RwLock};
 
 use crossbeam_channel::Sender;
 
 use lazy_static::lazy_static;
-use ndarray::{s, Array, Array3, ArrayViewMut2, Axis};
+use ndarray::{s, Array, Array2, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Dimension, Ix2};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 
 use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InputData};
-use crate::overlaps::{self, Alignment, CigarStatus, Strand};
+use crate::overlaps::{self, Alignment, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
@@ -28,6 +29,20 @@ lazy_static! {
         arr[b'C' as usize] = b'c';
         arr[b'G' as usize] = b'g';
         arr[b'T' as usize] = b't';
+        arr
+    };
+    static ref BASE_FORWARD: [u8; 128] = {
+        let mut arr = [255; 128];
+        arr[b'A' as usize] = b'A';
+        arr[b'C' as usize] = b'C';
+        arr[b'G' as usize] = b'G';
+        arr[b'T' as usize] = b'T';
+        arr[b'*' as usize] = b'*';
+        arr[b'a' as usize] = b'A';
+        arr[b'c' as usize] = b'C';
+        arr[b'g' as usize] = b'G';
+        arr[b't' as usize] = b'T';
+        arr[b'#' as usize] = b'*';
         arr
     };
 }
@@ -308,7 +323,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
     let mut windows = vec![Vec::new(); n_windows];
 
-    let mut ovlps_cigar_map = HashMap::new();
+    let mut ovlps_cigar_map = HashMap::default();
     for alignment in overlaps {
         let overlap = Rc::new(alignment.overlap.clone());
         let qid = overlap.return_other_id(rid);
@@ -416,10 +431,62 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
             .collect();
 
-        feats_output.update(window, qids, i as u16);
+        let supported = get_supported(&window.index_axis(Axis(2), 0));
+
+        feats_output.update(window, supported, qids, i as u16);
     }
 
     feats_output.emit();
+}
+
+fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<u32>
+where
+    S: Data<Elem = u8>,
+{
+    let len = bases.shape()[1];
+    let mut counter: HashMap<u64, u8> = HashMap::default();
+    let mut supporeted = Vec::new();
+
+    let mut start = 0;
+    let mut tpos = 0;
+    for l in 1..len + 1 {
+        if l != len && bases[[0, l]] == b'*' {
+            // Gap in target -> do not test
+            continue;
+        }
+
+        let subseq = bases.slice(s![.., start..l]);
+        counter.clear();
+        for read_subseq in subseq.axis_iter(Axis(0)) {
+            let mut hasher = FxHasher::default();
+            let result = read_subseq.iter().try_for_each(|&v| {
+                if v == b'.' {
+                    return Err(()); // No alignment position present
+                } else {
+                    hasher.write_u8(BASE_FORWARD[v as usize]);
+                    return Ok(());
+                }
+            });
+
+            if result.is_ok() {
+                // Check if alignment is really aligned
+                let entry = counter.entry(hasher.finish()).or_insert(0);
+                *entry += 1;
+            }
+        }
+
+        let n_supported = counter
+            .iter()
+            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
+        if n_supported >= 2 {
+            supporeted.push(tpos as u32);
+        }
+
+        start = l;
+        tpos += 1;
+    }
+
+    supporeted
 }
 
 fn output_features<P: AsRef<Path>>(
@@ -427,6 +494,7 @@ fn output_features<P: AsRef<Path>>(
     window_id: u16,
     ids: &[&str],
     features: &Array3<u8>,
+    supported: Vec<u32>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
     let ids_file = File::create(ids_path)?;
@@ -439,6 +507,10 @@ fn output_features<P: AsRef<Path>>(
     let file = File::create(features_path)?;
     features.write_npy(file).unwrap();
 
+    let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
+    let file = File::create(supported_path)?;
+    Array::from_vec(supported).write_npy(file).unwrap();
+
     Ok(())
 }
 
@@ -446,7 +518,7 @@ pub(crate) trait FeaturesOutput<'a> {
     fn init<'b>(&mut self, rid: u32, rname: &'b str)
     where
         'b: 'a;
-    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16);
+    fn update(&mut self, features: Array3<u8>, supoprted: Vec<u32>, ids: Vec<&str>, wid: u16);
     fn emit(&mut self);
 }
 
@@ -482,11 +554,11 @@ where
         self.rname.replace(rname);
     }
 
-    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16) {
+    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, ids: Vec<&str>, wid: u16) {
         let output_path = self.base_path.as_ref().join(self.rname.unwrap());
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(&output_path, wid, &ids, &features);
+        output_features(&output_path, wid, &ids, &features, supported);
     }
 
     fn emit(&mut self) {
@@ -520,7 +592,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         self.features.clear();
     }
 
-    fn update(&mut self, features: Array3<u8>, ids: Vec<&str>, wid: u16) {
+    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, ids: Vec<&str>, wid: u16) {
         self.features.push((wid, features));
     }
 
