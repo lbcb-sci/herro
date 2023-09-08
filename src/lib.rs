@@ -1,4 +1,5 @@
-use features::{extract_features, FeaturesOutput};
+use crossbeam_channel::bounded;
+use features::extract_features;
 
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 
@@ -9,13 +10,15 @@ use thread_local::ThreadLocal;
 
 use std::{
     cell::RefCell,
-    collections::VecDeque,
-    fs::File,
     path::Path,
     sync::{Arc, RwLock},
+    thread,
 };
 
-use crate::features::FeatsGenOutput;
+use crate::{
+    features::{FeatsGenOutput, InferenceOutput},
+    inference::{consensus_worker, inference_worker},
+};
 
 mod aligners;
 mod features;
@@ -49,10 +52,9 @@ pub fn generate_features<T, U, V>(
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
-    let feats_output = FeatsGenOutput::new(output_path);
-
     let sequences = Arc::new(ThreadLocal::new());
     let fo_tl = Arc::new(ThreadLocal::new());
+    let feats_output = FeatsGenOutput::new(output_path);
 
     rayon::ThreadPoolBuilder::new()
         .num_threads(feat_gen_threads)
@@ -117,9 +119,9 @@ pub fn generate_features<T, U, V>(
     }
 }
 
-/*pub fn error_correction<T, U, V>(
+pub fn error_correction<T, U, V>(
     reads_path: T,
-    paf_path: U,
+    paf_path: Option<U>,
     model_path: &str,
     output_path: V,
     threads: usize,
@@ -130,10 +132,9 @@ pub fn generate_features<T, U, V>(
     U: AsRef<Path>,
     V: AsRef<Path> + Send + Sync,
 {
-    unreachable!();
-
     // Get fastq reads
-    let reads = haec_io::get_reads(reads_path, window_size);
+    let reads = haec_io::get_reads(&reads_path, window_size);
+    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     let name_to_id: HashMap<_, _> = reads
         .iter()
         .enumerate()
@@ -141,17 +142,13 @@ pub fn generate_features<T, U, V>(
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
-    // Parse, filteer and extend overlaps
-    let file = File::open(paf_path).unwrap();
-    let read_to_overlaps = overlaps::parse_paf(file, &name_to_id);
-
-    // Build batches
-    let batches = build_batches(read_to_overlaps);
+    let sequences = Arc::new(ThreadLocal::new());
+    let fo_tl = Arc::new(ThreadLocal::new());
 
     let (feats_sender, feats_receiver) = bounded(1000);
+    let (pred_sender, pred_receiver) = bounded(1000);
     let feats_output = InferenceOutput::new(feats_sender);
 
-    let (pred_sender, pred_receiver) = bounded(1000);
     thread::scope(|s| {
         // Create inference thread for every GPU
         devices.iter().for_each(|d| {
@@ -168,39 +165,49 @@ pub fn generate_features<T, U, V>(
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
 
-        align_and_extract(batches, &reads, feats_output, window_size, threads);
-    });
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global()
+            .unwrap();
 
-    //extract_features(&reads, &overlaps, window_size, feats_sender);
-}
+        for batch in reads.chunks(READS_BATCH_SIZE) {
+            let alignments = if paf_path.is_none() {
+                let mm2_out = mm2::call_mm2(batch, &reads_path, threads);
+                overlaps::parse_paf(mm2_out, &name_to_id)
+            } else {
+                /*let file = File::open(&overlaps.as_ref().unwrap()).unwrap();
+                overlaps::parse_paf(file, &name_to_id)*/
 
-fn align_and_extract<'a, T>(
-    batches: Vec<Vec<(u32, ReadOverlaps)>>,
-    reads: &'a [HAECRecord],
-    feats_output: T,
-    window_size: u32,
-    threads: usize,
-) where
-    T: FeaturesOutput<'a> + Clone + Send + Sync,
-{
-    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
+                unimplemented!()
+            };
 
-    //let aligners = Arc::new(ThreadLocal::new());
-    let sequences = Arc::new(ThreadLocal::new());
-    let fo_tl = Arc::new(ThreadLocal::new());
+            // Parse, filter and extend overlaps
+            let tids: HashSet<_> = batch
+                .iter()
+                .map(|r| *name_to_id.get(&*r.id).unwrap())
+                .collect();
 
-    let n_batches = batches.len();
-    batches
-        .into_iter()
-        .progress_count(n_batches as u64)
-        .for_each(|batch| {
-            let batch_len = batch.len();
+            let mut read_to_alns = HashMap::default();
+            alignments.iter().for_each(|aln| {
+                if tids.contains(&aln.overlap.tid) {
+                    read_to_alns
+                        .entry(aln.overlap.tid)
+                        .or_insert_with(|| Vec::new())
+                        .push(aln);
+                }
 
-            batch
+                if tids.contains(&aln.overlap.qid) {
+                    read_to_alns
+                        .entry(aln.overlap.qid)
+                        .or_insert_with(|| Vec::new())
+                        .push(aln);
+                }
+            });
+
+            read_to_alns
                 .into_par_iter()
-                .progress_count(batch_len as u64)
-                .for_each(|(rid, overlaps)| {
-                    //let aligner = aligners.get_or(|| RefCell::new(WFAAligner::new()));
+                .progress_count(batch.len() as u64)
+                .for_each(|(rid, alns)| {
                     let (target, query) = sequences.get_or(|| {
                         (
                             RefCell::new(vec![0u8; max_len]),
@@ -209,64 +216,15 @@ fn align_and_extract<'a, T>(
                     });
                     let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
 
-                    /*align_overlaps(
-                        &overlaps,
-                        &reads,
-                        &mut aligner.borrow_mut(),
-                        (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                    );*/
-
                     extract_features(
                         rid,
                         &reads,
-                        &overlaps,
+                        &alns,
                         window_size,
                         (&mut target.borrow_mut(), &mut query.borrow_mut()),
                         &mut *fo.borrow_mut(),
                     )
                 });
-        });
-}*/
-
-fn build_batches(
-    mut read_to_overlaps: HashMap<u32, ReadOverlaps>,
-) -> Vec<Vec<(u32, ReadOverlaps)>> {
-    let mut unprocessed: HashSet<_> = read_to_overlaps.keys().map(|k| *k).collect();
-    let mut queue = VecDeque::new();
-
-    let mut batches = Vec::new();
-    let mut batch = Vec::with_capacity(READS_BATCH_SIZE);
-
-    // While all the reads haven't been processed
-    while unprocessed.len() > 0 {
-        // No more reads in the queue, get a new one
-        if queue.len() == 0 {
-            let rid = *unprocessed.iter().next().unwrap();
-            queue.push_back(rid);
         }
-
-        let tid = queue.pop_front().unwrap();
-        if unprocessed.contains(&tid) {
-            // Add all the reads that overlap with this one
-            read_to_overlaps.get(&tid).unwrap().iter().for_each(|aln| {
-                let qid = aln.read().unwrap().overlap.return_other_id(tid);
-                queue.push_back(qid);
-            });
-
-            batch.push((tid, read_to_overlaps.remove(&tid).unwrap()));
-            unprocessed.remove(&tid);
-
-            // Emit a new batch
-            if batch.len() >= READS_BATCH_SIZE {
-                batches.push(batch);
-                batch = Vec::with_capacity(READS_BATCH_SIZE);
-            }
-        }
-    }
-
-    if batch.len() > 0 {
-        batches.push(batch);
-    }
-
-    batches
+    });
 }

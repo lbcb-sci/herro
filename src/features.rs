@@ -1,5 +1,4 @@
 use rustc_hash::{FxHashMap as HashMap, FxHasher};
-use std::error::Error;
 use std::fs::{create_dir_all, File};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -10,7 +9,7 @@ use std::rc::Rc;
 use crossbeam_channel::Sender;
 
 use lazy_static::lazy_static;
-use ndarray::{s, Array, Array2, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Dimension, Ix2};
+use ndarray::{s, Array, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Ix2};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 
@@ -570,7 +569,7 @@ where
 pub(crate) struct InferenceOutput {
     sender: Sender<InputData>,
     rid: u32,
-    features: Vec<(u16, Array3<u8>)>,
+    features: Vec<(u16, Array3<u8>, Vec<u32>)>,
 }
 
 impl InferenceOutput {
@@ -584,7 +583,7 @@ impl InferenceOutput {
 }
 
 impl<'a> FeaturesOutput<'a> for InferenceOutput {
-    fn init<'b>(&mut self, rid: u32, rname: &'b str)
+    fn init<'b>(&mut self, rid: u32, _rname: &'b str)
     where
         'b: 'a,
     {
@@ -592,12 +591,12 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         self.features.clear();
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, ids: Vec<&str>, wid: u16) {
-        self.features.push((wid, features));
+    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, _ids: Vec<&str>, wid: u16) {
+        self.features.push((wid, features, supported));
     }
 
     fn emit(&mut self) {
-        let data = prepare_examples(self.rid, &mut self.features);
+        let data = prepare_examples(self.rid, self.features.drain(..));
         self.sender.send(data).unwrap();
     }
 }

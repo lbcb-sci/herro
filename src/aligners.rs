@@ -1,10 +1,8 @@
+#![allow(dead_code)]
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    haec_io::HAECRecord,
-    overlaps::{self, Alignment, CigarStatus, Overlap, Strand},
-};
+use crate::overlaps::Strand;
 
 pub mod wfa;
 

@@ -13,11 +13,10 @@ use tch::{CModule, IValue, IndexOp, Tensor};
 
 use crate::haec_io::HAECRecord;
 
-const BATCH_SIZE: usize = 16;
+const BATCH_SIZE: usize = 32;
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 126.;
-const PATCH_SIZE: usize = 16;
 
 lazy_static! {
     static ref BASES_MAP: [u8; 128] = {
@@ -128,54 +127,12 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     inputs
 }
 
-fn collate2(batch: &[Features], device: tch::Device) -> Vec<IValue> {
-    // Patch-aware padding
-    // Get longest sequence
-    let length = batch.iter().map(|f| f.bases.len_of(Axis(0))).max().unwrap();
-    let length = ((length + PATCH_SIZE - 1) / PATCH_SIZE) * PATCH_SIZE;
-
-    let size = [
-        batch.len() as i64,
-        length as i64,
-        batch[0].bases.len_of(Axis(1)) as i64,
-    ]; // [B, L, R]
-
-    let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
-    let quals = Tensor::ones(&size, (tch::Kind::Float, device));
-    let lengths = Tensor::empty(&[batch.len() as i64], (tch::Kind::Int, device));
-    let mut tps = Vec::new();
-
-    for (idx, f) in batch.iter().enumerate() {
-        let l = f.bases.len_of(Axis(0));
-
-        bases
-            .i((idx as i64, ..l as i64, ..))
-            .copy_(&Tensor::try_from(&f.bases).unwrap());
-        quals
-            .i((idx as i64, ..l as i64, ..))
-            .copy_(&Tensor::try_from(&f.quals).unwrap());
-
-        let _ = lengths.i(idx as i64).fill_(l as i64);
-
-        tps.push(Tensor::from_slice(&f.target_positions));
-    }
-
-    let inputs = vec![
-        IValue::Tensor(bases),
-        IValue::Tensor(quals),
-        IValue::Tensor(lengths),
-        IValue::TensorList(tps),
-    ];
-
-    inputs
-}
-
 fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputData {
     let mut logits = Vec::new();
 
     for i in (0..data.windows.len()).step_by(BATCH_SIZE) {
         let batch = &data.windows[i..(i + BATCH_SIZE).min(data.windows.len())];
-        let inputs = collate2(batch, device);
+        let inputs = collate(batch, device);
 
         let out = model
             .forward_is(&inputs)
@@ -222,20 +179,14 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     });
 }
 
-pub(crate) fn prepare_examples(rid: u32, features: &mut [(u16, Array3<u8>)]) -> InputData {
+pub(crate) fn prepare_examples(
+    rid: u32,
+    features: impl Iterator<Item = (u16, Array3<u8>, Vec<u32>)>,
+) -> InputData {
     let windows: Vec<_> = features
-        .iter_mut()
-        .map(|(wid, ref mut feats)| {
+        .map(|(wid, ref mut feats, supported)| {
             // Transpose: [R, L, 2] -> [L, R, 2]
             feats.swap_axes(1, 0);
-
-            // Get target positions: base == '*'
-            let tps: Vec<_> = feats
-                .slice(s![.., 0, 0])
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, b)| if *b != b'*' { Some(idx as i32) } else { None })
-                .collect();
 
             // Transform bases (encode) and quals (normalize)
             let bases = feats.index_axis(Axis(2), 0).mapv(|b| BASES_MAP[b as usize]);
@@ -243,7 +194,12 @@ pub(crate) fn prepare_examples(rid: u32, features: &mut [(u16, Array3<u8>)]) -> 
                 .index_axis(Axis(2), 1)
                 .mapv(|q| (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL));
 
-            Features::new(*wid, bases, quals, tps)
+            Features::new(
+                wid,
+                bases,
+                quals,
+                supported.into_iter().map(|i| i as i32).collect(),
+            )
         })
         .collect();
 
@@ -417,7 +373,7 @@ mod tests {
                 (i as u16, feats)
             })
             .collect();
-        let input_data = prepare_examples(0, &mut features);
+        let input_data = prepare_examples(0, features);
 
         let output = inference(input_data, &model, device);
         let predicted: Array1<f32> = output

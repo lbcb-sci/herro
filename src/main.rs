@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::generate_features;
+use ont_haec_rs::{error_correction, generate_features};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -33,9 +33,8 @@ struct FeatGenArgs {
 
 #[derive(Args)]
 struct InferenceArgs {
-    reads: String,
-
-    overlaps: String,
+    #[arg(short = 'o')]
+    overlaps: Option<String>,
 
     #[arg(short = 'w', default_value = "4096")]
     window_size: u32,
@@ -43,13 +42,15 @@ struct InferenceArgs {
     #[arg(short = 't', default_value = "1")]
     feat_gen_threads: usize,
 
-    output: String,
-
     #[arg(short = 'm')]
     model: String,
 
     #[arg(short = 'd', value_delimiter = ',', default_value = "0")]
     devices: Vec<usize>,
+
+    reads: String,
+
+    output: String,
 }
 
 fn main() {
@@ -64,15 +65,15 @@ fn main() {
                 args.feat_gen_threads,
                 args.window_size,
             );
-        } /*Commands::Inference(args) => error_correction(
-        args.reads,
-        args.overlaps,
-        &args.model,
-        args.output,
-        args.feat_gen_threads,
-        args.window_size,
-        &args.devices,
-        ),*/
-        Commands::Inference(args) => unimplemented!(),
+        }
+        Commands::Inference(args) => error_correction(
+            args.reads,
+            args.overlaps,
+            &args.model,
+            args.output,
+            args.feat_gen_threads,
+            args.window_size,
+            &args.devices,
+        ),
     }
 }

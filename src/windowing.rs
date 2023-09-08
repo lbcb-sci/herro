@@ -1,7 +1,4 @@
-use std::{
-    rc::Rc,
-    sync::{Arc, Mutex, RwLock},
-};
+use std::rc::Rc;
 
 use crate::{aligners::CigarOp, overlaps::Overlap};
 
