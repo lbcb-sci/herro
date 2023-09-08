@@ -105,8 +105,10 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     let quals = Tensor::ones(&size, (tch::Kind::Float, device));
     let mut tps = Vec::new();
 
+    let mut lens = Vec::with_capacity(batch.len());
     for (idx, f) in batch.iter().enumerate() {
         let l = f.bases.len_of(Axis(0));
+        lens.push(l as i32);
 
         bases
             .i((idx as i64, ..l as i64, ..))
@@ -121,6 +123,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
     let inputs = vec![
         IValue::Tensor(bases),
         IValue::Tensor(quals),
+        IValue::Tensor(Tensor::try_from(lens).unwrap()),
         IValue::TensorList(tps),
     ];
 
