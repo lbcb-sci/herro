@@ -84,7 +84,7 @@ pub(crate) struct OutputData {
     windows: Vec<Output>,
 }
 
-type Output = (u16, Array2<u8>, Vec<f32>); // wid, bases, logits
+type Output = (u16, Array2<u8>, Vec<i32>, Vec<f32>); // wid, bases, logits
 
 impl OutputData {
     fn new(rid: u32, windows: Vec<Output>) -> Self {
@@ -153,7 +153,7 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
         .windows
         .into_iter()
         .zip(logits.into_iter())
-        .map(|(f, t)| (f.wid, f.bases, t.try_into().unwrap()))
+        .map(|(f, t)| (f.wid, f.bases, f.target_positions, t.try_into().unwrap()))
         .collect();
 
     OutputData::new(data.rid, outputs)
@@ -181,9 +181,10 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl Iterator<Item = (u16, Array3<u8>, Vec<u32>)>,
+    features: impl IntoIterator<Item = (u16, Array3<u8>, Vec<u32>)>,
 ) -> InputData {
     let windows: Vec<_> = features
+        .into_iter()
         .map(|(wid, ref mut feats, supported)| {
             // Transpose: [R, L, 2] -> [L, R, 2]
             feats.swap_axes(1, 0);
@@ -215,7 +216,7 @@ fn consensus(
     let windows: HashMap<_, (_, _)> = data
         .windows
         .into_iter()
-        .map(|(w, b, l)| (w, (b, l)))
+        .map(|(w, b, _, l)| (w, (b, l)))
         .collect();
     let n_windows = ((read.seq.len() - 1) / window_size) + 1;
 
@@ -317,11 +318,22 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
         };
 
         let rid = output.rid as usize;
-        let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
+
+        output
+            .windows
+            .iter()
+            .for_each(|(wid, _, supported, logits)| {
+                supported
+                    .iter()
+                    .zip(logits.iter())
+                    .for_each(|(pos, l)| println!("{}\t{}\t{}\t{}", &reads[rid].id, wid, pos, l));
+            });
+
+        /*let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
 
         writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
         writer.write(&seq).unwrap();
-        write!(&mut writer, "\n").unwrap();
+        write!(&mut writer, "\n").unwrap();*/
     }
 }
 
