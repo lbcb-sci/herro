@@ -61,7 +61,7 @@ pub fn generate_features<T, U, V>(
         .build_global()
         .unwrap();
 
-    for batch in reads.chunks(READS_BATCH_SIZE) {
+    for batch in reads.chunks(READS_BATCH_SIZE).progress() {
         let alignments = if overlaps.is_none() {
             let mm2_out = mm2::call_mm2(batch, &reads_path, feat_gen_threads);
             overlaps::parse_paf(mm2_out, &name_to_id)
@@ -170,7 +170,7 @@ pub fn error_correction<T, U, V>(
             .build_global()
             .unwrap();
 
-        for batch in reads.chunks(READS_BATCH_SIZE) {
+        for batch in reads.chunks(READS_BATCH_SIZE).progress() {
             let alignments = if paf_path.is_none() {
                 let mm2_out = mm2::call_mm2(batch, &reads_path, threads);
                 overlaps::parse_paf(mm2_out, &name_to_id)
