@@ -92,7 +92,7 @@ impl OutputData {
     }
 }
 
-fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
+fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
     // Get longest sequence
     let length = batch.iter().map(|f| f.bases.len_of(Axis(0))).max().unwrap();
     let size = [
@@ -101,8 +101,12 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
         batch[0].bases.len_of(Axis(1)) as i64,
     ]; // [B, L, R]
 
-    let bases = Tensor::full(&size, BASE_PADDING as i64, (tch::Kind::Int, device));
-    let quals = Tensor::ones(&size, (tch::Kind::Float, device));
+    let bases = Tensor::full(
+        &size,
+        BASE_PADDING as i64,
+        (tch::Kind::Int, tch::Device::Cpu),
+    );
+    let quals = Tensor::ones(&size, (tch::Kind::Float, tch::Device::Cpu));
     let mut tps = Vec::new();
 
     let mut lens = Vec::with_capacity(batch.len());
@@ -124,14 +128,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
-    let inputs = vec![
-        IValue::Tensor(bases),
-        IValue::Tensor(quals),
-        IValue::Tensor(Tensor::try_from(lens).unwrap()),
-        IValue::TensorList(tps),
-    ];
-
-    inputs
+    (bases, quals, Tensor::try_from(lens).unwrap(), tps)
 }
 
 fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputData {
@@ -153,7 +150,13 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
             continue;
         }
 
-        let inputs = collate(batch, device);
+        let (bases, quals, lens, tps) = collate(batch);
+        let inputs = [
+            IValue::Tensor(bases.to(device)),
+            IValue::Tensor(quals.to(device)),
+            IValue::Tensor(lens),
+            IValue::TensorList(tps),
+        ];
 
         let out = model
             .forward_is(&inputs)
@@ -161,8 +164,8 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
             .unwrap();
 
         // Get number of target positions for each window
-        let lens: Vec<_> = match inputs[3] {
-            IValue::TensorList(ref tps) => tps.iter().map(|t| t.size1().unwrap()).collect(),
+        let lens: Vec<i64> = match inputs[2] {
+            IValue::Tensor(ref t) => Vec::try_from(t).unwrap(),
             _ => unreachable!(),
         };
 
@@ -189,7 +192,9 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
 
-    tch::no_grad(|| loop {
+    let _no_grad = tch::no_grad_guard();
+
+    loop {
         let data = match input_channel.recv() {
             Ok(data) => data,
             Err(_) => break,
@@ -197,7 +202,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
         let output = inference(data, &model, device);
         output_channel.send(output).unwrap();
-    });
+    }
 }
 
 pub(crate) fn prepare_examples(

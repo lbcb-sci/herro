@@ -226,5 +226,7 @@ pub fn error_correction<T, U, V>(
                     )
                 });
         }
+
+        drop(fo_tl);
     });
 }
