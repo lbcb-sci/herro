@@ -112,7 +112,6 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
         }
 
         let l = f.bases.len_of(Axis(0));
-        lens.push(l as i32);
 
         bases
             .i((idx as i64, ..l as i64, ..))
@@ -121,6 +120,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.quals).unwrap());
 
+        lens.push(f.target_positions.len() as i32);
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
