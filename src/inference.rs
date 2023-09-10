@@ -107,6 +107,7 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
 
     let mut lens = Vec::with_capacity(batch.len());
     for (idx, f) in batch.iter().enumerate() {
+        eprintln!("{:?}", &f.target_positions);
         if f.target_positions.len() == 0 {
             continue; // No suported positions
         }
