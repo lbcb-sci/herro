@@ -149,6 +149,8 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
             let logits_batch =
                 (0..batch.len()).map(|_| Tensor::empty(&[0], (tch::Kind::Float, tch::Device::Cpu)));
             logits.extend(logits_batch);
+
+            continue;
         }
 
         let inputs = collate(batch, device);
