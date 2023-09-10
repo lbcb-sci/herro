@@ -566,28 +566,31 @@ where
 }
 
 #[derive(Clone)]
-pub(crate) struct InferenceOutput {
+pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InputData>,
     rid: u32,
+    rname: Option<&'a str>,
     features: Vec<(u16, Array3<u8>, Vec<u32>)>,
 }
 
-impl InferenceOutput {
+impl InferenceOutput<'_> {
     pub(crate) fn new(sender: Sender<InputData>) -> Self {
         Self {
             sender,
             rid: u32::MAX,
+            rname: None,
             features: Vec::new(),
         }
     }
 }
 
-impl<'a> FeaturesOutput<'a> for InferenceOutput {
-    fn init<'b>(&mut self, rid: u32, _rname: &'b str)
+impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
+    fn init<'b>(&mut self, rid: u32, rname: &'b str)
     where
         'b: 'a,
     {
         self.rid = rid;
+        self.rname.replace(rname);
         self.features.clear();
     }
 
@@ -596,6 +599,9 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
     }
 
     fn emit(&mut self) {
+        let lens: Vec<_> = self.features.iter().map(|(_, _, tps)| tps.len()).collect();
+        println!("{}, {:?}", self.rname.unwrap(), lens);
+
         let data = prepare_examples(self.rid, self.features.drain(..));
         self.sender.send(data).unwrap();
     }
