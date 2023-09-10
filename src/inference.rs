@@ -107,7 +107,6 @@ fn collate(batch: &[Features], device: tch::Device) -> Vec<IValue> {
 
     let mut lens = Vec::with_capacity(batch.len());
     for (idx, f) in batch.iter().enumerate() {
-        eprintln!("{:?}", &f.target_positions);
         if f.target_positions.len() == 0 {
             continue; // No suported positions
         }
@@ -140,6 +139,18 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
 
     for i in (0..data.windows.len()).step_by(BATCH_SIZE) {
         let batch = &data.windows[i..(i + BATCH_SIZE).min(data.windows.len())];
+
+        let max_supported = batch
+            .iter()
+            .map(|f| f.target_positions.len())
+            .max()
+            .unwrap();
+        if max_supported == 0 {
+            let logits_batch =
+                (0..batch.len()).map(|_| Tensor::empty(&[0], (tch::Kind::Float, tch::Device::Cpu)));
+            logits.extend(logits_batch);
+        }
+
         let inputs = collate(batch, device);
 
         let out = model

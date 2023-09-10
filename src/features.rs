@@ -599,9 +599,6 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
     }
 
     fn emit(&mut self) {
-        let lens: Vec<_> = self.features.iter().map(|(_, _, tps)| tps.len()).collect();
-        println!("{}, {:?}", self.rname.unwrap(), lens);
-
         let data = prepare_examples(self.rid, self.features.drain(..));
         self.sender.send(data).unwrap();
     }
