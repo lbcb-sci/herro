@@ -203,6 +203,8 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
         let output = inference(data, &model, device);
         output_channel.send(output).unwrap();
     }
+
+    println!("Inference worker finished.");
 }
 
 pub(crate) fn prepare_examples(
