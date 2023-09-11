@@ -600,6 +600,15 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
 
     fn emit(&mut self) {
         let data = prepare_examples(self.rid, self.features.drain(..));
+
+        data.windows.iter().for_each(|f| {
+            println!(
+                "{} target positions: {:?}",
+                self.rname.unwrap(),
+                &f.target_positions
+            )
+        });
+
         self.sender.send(data).unwrap();
     }
 }

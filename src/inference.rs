@@ -51,8 +51,8 @@ lazy_static! {
 }
 
 pub(crate) struct InputData {
-    rid: u32,
-    windows: Vec<Features>,
+    pub rid: u32,
+    pub windows: Vec<Features>,
 }
 
 impl InputData {
@@ -62,11 +62,11 @@ impl InputData {
 }
 
 pub(crate) struct Features {
-    wid: u16,
-    bases: Array2<u8>,  // [L, R]
-    quals: Array2<f32>, // [L, R]
-    target_positions: Vec<i32>,
-    supported: Vec<u32>,
+    pub wid: u16,
+    pub bases: Array2<u8>,  // [L, R]
+    pub quals: Array2<f32>, // [L, R]
+    pub target_positions: Vec<i32>,
+    pub supported: Vec<u32>,
 }
 
 impl Features {
@@ -249,8 +249,6 @@ pub(crate) fn prepare_examples(
                     None
                 })
                 .collect();
-
-            println!("Target positions: {:?}", &tps);
 
             Features::new(wid, bases, quals, tps, supported)
         })
