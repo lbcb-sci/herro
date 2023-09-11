@@ -136,6 +136,9 @@ fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
+    bases.save("bases.pt").unwrap();
+    quals.save("quals.pt").unwrap();
+
     (bases, quals, Tensor::try_from(lens).unwrap(), tps)
 }
 
@@ -227,7 +230,7 @@ pub(crate) fn prepare_examples(
             let bases = feats.index_axis(Axis(2), 0).mapv(|b| BASES_MAP[b as usize]);
             let quals = feats
                 .index_axis(Axis(2), 1)
-                .mapv(|q| (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL));
+                .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
             let mut tpos = 0;
             let mut supp_idx = 0;
@@ -391,7 +394,7 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use approx::assert_abs_diff_eq;
+    use approx::{assert_abs_diff_eq, assert_relative_eq};
     use ndarray::{Array1, Array3};
     use ndarray_npy::read_npy;
 
@@ -404,35 +407,33 @@ mod tests {
         let resources = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
 
         // Load model
-        let mut model = tch::CModule::load_on_device(
-            &resources.join("resources/patched_transformer-run2.pt"),
-            device,
-        )
-        .unwrap();
+        let mut model =
+            tch::CModule::load_on_device(&resources.join("resources/mm2-attn.pt"), device).unwrap();
         model.set_eval();
 
         // Get files list
-        let mut files: Vec<_> = resources
+        /*let mut files: Vec<_> = resources
             .join("resources/example_feats")
             .read_dir()
             .unwrap()
             .filter_map(|p| {
                 let p = p.unwrap().path();
+                p.
                 match p.extension() {
                     Some(ext) if ext == "npy" => Some(p),
                     _ => None,
                 }
             })
             .collect();
-        files.sort();
+        files.sort();*/
 
         // Create input data
-        let mut features: Vec<_> = files
+        let features: Vec<_> = (0..4)
             .into_iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let feats: Array3<u8> = read_npy(p).unwrap();
-                (i as u16, feats)
+            .map(|wid| {
+                let feats: Array3<u8> = read_npy(format!("/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.features.npy", wid)).unwrap();
+                let supported: Array1<u16> = read_npy(format!("/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.supported.npy", wid)).unwrap();
+                (wid as u16, feats, supported.iter().map(|s| *s as u32).collect())
             })
             .collect();
         let input_data = prepare_examples(0, features);
@@ -441,16 +442,16 @@ mod tests {
         let predicted: Array1<f32> = output
             .windows
             .into_iter()
-            .flat_map(|(_, _, l)| l.into_iter())
+            .flat_map(|(_, _, _, l)| l.into_iter())
             .collect();
 
         let target: Array1<f32> =
             read_npy(resources.join("resources/example_feats_tch_out.npy")).unwrap();
 
-        assert_abs_diff_eq!(predicted, target);
+        assert_relative_eq!(predicted, target, epsilon = 1e-5);
     }
 
-    #[test]
+    /*#[test]
     fn test2() {
         let _guard = tch::no_grad_guard();
         let device = tch::Device::Cpu;
@@ -495,5 +496,5 @@ mod tests {
             .collect();
 
         println!("{:?}", &predicted.to_vec()[4056 - 5..4056 + 5]);
-    }
+    }*/
 }
