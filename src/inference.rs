@@ -250,6 +250,8 @@ pub(crate) fn prepare_examples(
                 })
                 .collect();
 
+            println!("Target positions: {:?}", &tps);
+
             Features::new(wid, bases, quals, tps, supported)
         })
         .collect();
