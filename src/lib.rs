@@ -227,6 +227,7 @@ pub fn error_correction<T, U, V>(
                 });
         }
 
+        drop(feats_output);
         drop(fo_tl);
     });
 }
