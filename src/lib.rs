@@ -142,11 +142,11 @@ pub fn error_correction<T, U, V>(
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
-    let sequences = Arc::new(ThreadLocal::new());
-    let fo_tl = Arc::new(ThreadLocal::new());
-
     let (feats_sender, feats_receiver) = bounded(1000);
     let (pred_sender, pred_receiver) = bounded(1000);
+
+    let sequences = Arc::new(ThreadLocal::new());
+    let fo_tl = Arc::new(ThreadLocal::new());
     let feats_output = InferenceOutput::new(feats_sender);
 
     thread::scope(|s| {
@@ -227,7 +227,7 @@ pub fn error_correction<T, U, V>(
                 });
         }
 
-        drop(feats_output);
         drop(fo_tl);
+        drop(feats_output);
     });
 }

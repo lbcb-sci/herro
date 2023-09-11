@@ -66,15 +66,23 @@ pub(crate) struct Features {
     bases: Array2<u8>,  // [L, R]
     quals: Array2<f32>, // [L, R]
     target_positions: Vec<i32>,
+    supported: Vec<u32>,
 }
 
 impl Features {
-    fn new(wid: u16, bases: Array2<u8>, quals: Array2<f32>, target_positions: Vec<i32>) -> Self {
+    fn new(
+        wid: u16,
+        bases: Array2<u8>,
+        quals: Array2<f32>,
+        target_positions: Vec<i32>,
+        supported: Vec<u32>,
+    ) -> Self {
         Self {
             wid,
             bases,
             quals,
             target_positions,
+            supported,
         }
     }
 }
@@ -84,7 +92,7 @@ pub(crate) struct OutputData {
     windows: Vec<Output>,
 }
 
-type Output = (u16, Array2<u8>, Vec<i32>, Vec<f32>); // wid, bases, logits
+type Output = (u16, Array2<u8>, Vec<u32>, Vec<f32>); // wid, bases, logits
 
 impl OutputData {
     fn new(rid: u32, windows: Vec<Output>) -> Self {
@@ -177,7 +185,7 @@ fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputDat
         .windows
         .into_iter()
         .zip(logits.into_iter())
-        .map(|(f, t)| (f.wid, f.bases, f.target_positions, t.try_into().unwrap()))
+        .map(|(f, t)| (f.wid, f.bases, f.supported, t.try_into().unwrap()))
         .collect();
 
     OutputData::new(data.rid, outputs)
@@ -203,8 +211,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
         let output = inference(data, &model, device);
         output_channel.send(output).unwrap();
     }
-
-    println!("Inference worker finished.");
 }
 
 pub(crate) fn prepare_examples(
@@ -223,12 +229,28 @@ pub(crate) fn prepare_examples(
                 .index_axis(Axis(2), 1)
                 .mapv(|q| (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL));
 
-            Features::new(
-                wid,
-                bases,
-                quals,
-                supported.into_iter().map(|i| i as i32).collect(),
-            )
+            let mut tpos = 0;
+            let mut supp_idx = 0;
+            let tps = feats
+                .slice(s![.., 0, 0])
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, b)| {
+                    if supp_idx < supported.len() && *b != b'*' {
+                        if supported[supp_idx] == tpos {
+                            supp_idx += 1;
+                            tpos += 1;
+                            return Some(idx as i32);
+                        }
+
+                        tpos += 1;
+                    }
+
+                    None
+                })
+                .collect();
+
+            Features::new(wid, bases, quals, tps, supported)
         })
         .collect();
 
