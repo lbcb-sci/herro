@@ -136,9 +136,6 @@ fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
         tps.push(Tensor::from_slice(&f.target_positions));
     }
 
-    bases.save("bases.pt").unwrap();
-    quals.save("quals.pt").unwrap();
-
     (bases, quals, Tensor::try_from(lens).unwrap(), tps)
 }
 
@@ -394,7 +391,7 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
 mod tests {
     use std::path::PathBuf;
 
-    use approx::{assert_abs_diff_eq, assert_relative_eq};
+    use approx::assert_relative_eq;
     use ndarray::{Array1, Array3};
     use ndarray_npy::read_npy;
 
