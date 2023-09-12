@@ -5,15 +5,15 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender};
+use itertools::Itertools;
 use lazy_static::lazy_static;
 use ndarray::{s, Array2, Array3, Axis};
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use tch::{CModule, IValue, IndexOp, Tensor};
 
-use crate::haec_io::HAECRecord;
+use crate::{features::get_target_indices, haec_io::HAECRecord, BATCH_SIZE};
 
-const BATCH_SIZE: usize = 32;
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 126.;
@@ -50,63 +50,95 @@ lazy_static! {
     };
 }
 
-pub(crate) struct InputData {
-    pub rid: u32,
-    pub windows: Vec<Features>,
+// Bases, tidx, supported, logits
+pub(crate) struct ConsensusWindow {
+    bases: Array2<u8>,
+    quals: Array2<f32>,
+    indices: Vec<usize>,
+    supported: Vec<usize>,
+    logits: Option<Vec<f32>>,
 }
 
-impl InputData {
-    fn new(rid: u32, windows: Vec<Features>) -> Self {
-        Self { rid, windows }
-    }
-}
-
-pub(crate) struct Features {
-    pub wid: u16,
-    pub bases: Array2<u8>,  // [L, R]
-    pub quals: Array2<f32>, // [L, R]
-    pub target_positions: Vec<i32>,
-    pub supported: Vec<u32>,
-}
-
-impl Features {
+impl ConsensusWindow {
     fn new(
-        wid: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
-        target_positions: Vec<i32>,
-        supported: Vec<u32>,
+        indices: Vec<usize>,
+        supported: Vec<usize>,
+        logits: Option<Vec<f32>>,
     ) -> Self {
         Self {
-            wid,
             bases,
             quals,
-            target_positions,
+            indices,
             supported,
+            logits,
         }
     }
 }
 
-pub(crate) struct OutputData {
+pub(crate) struct ConsensusData {
     rid: u32,
-    windows: Vec<Output>,
+    windows: Vec<ConsensusWindow>,
 }
 
-type Output = (u16, Array2<u8>, Vec<u32>, Vec<f32>); // wid, bases, logits
-
-impl OutputData {
-    fn new(rid: u32, windows: Vec<Output>) -> Self {
+impl ConsensusData {
+    fn new(rid: u32, windows: Vec<ConsensusWindow>) -> Self {
         Self { rid, windows }
     }
 }
 
-fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
+pub(crate) struct InferenceBatch {
+    wids: Vec<u32>,
+    bases: Tensor,
+    quals: Tensor,
+    lens: Tensor,
+    indices: Vec<Tensor>,
+}
+
+impl InferenceBatch {
+    fn new(
+        wids: Vec<u32>,
+        bases: Tensor,
+        quals: Tensor,
+        lens: Tensor,
+        indices: Vec<Tensor>,
+    ) -> Self {
+        Self {
+            wids,
+            bases,
+            quals,
+            lens,
+            indices,
+        }
+    }
+}
+
+pub(crate) struct InferenceData {
+    consensus_data: ConsensusData,
+    batches: Vec<InferenceBatch>,
+}
+
+impl InferenceData {
+    fn new(consensus_data: ConsensusData, batches: Vec<InferenceBatch>) -> Self {
+        Self {
+            consensus_data,
+            batches,
+        }
+    }
+}
+
+fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
     // Get longest sequence
-    let length = batch.iter().map(|f| f.bases.len_of(Axis(0))).max().unwrap();
+    let length = batch
+        .iter()
+        .map(|(_, f)| f.bases.len_of(Axis(0)))
+        .max()
+        .unwrap();
     let size = [
         batch.len() as i64,
         length as i64,
-        batch[0].bases.len_of(Axis(1)) as i64,
+        batch[0].1.bases.len_of(Axis(1)) as i64,
     ]; // [B, L, R]
 
     let bases = Tensor::full(
@@ -114,15 +146,15 @@ fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
         BASE_PADDING as i64,
         (tch::Kind::Int, tch::Device::Cpu),
     );
+
     let quals = Tensor::ones(&size, (tch::Kind::Float, tch::Device::Cpu));
-    let mut tps = Vec::new();
 
     let mut lens = Vec::with_capacity(batch.len());
-    for (idx, f) in batch.iter().enumerate() {
-        if f.target_positions.len() == 0 {
-            continue; // No suported positions
-        }
+    let mut indices = Vec::with_capacity(batch.len());
+    let mut wids = Vec::with_capacity(batch.len());
 
+    for (idx, (wid, f)) in batch.iter().enumerate() {
+        wids.push(*wid);
         let l = f.bases.len_of(Axis(0));
 
         bases
@@ -132,70 +164,48 @@ fn collate(batch: &[Features]) -> (Tensor, Tensor, Tensor, Vec<Tensor>) {
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.quals).unwrap());
 
-        lens.push(f.target_positions.len() as i32);
-        tps.push(Tensor::from_slice(&f.target_positions));
+        lens.push(f.supported.len() as i32);
+
+        let tidx: Vec<_> = f.supported.iter().map(|&sp| f.indices[sp] as i32).collect();
+        indices.push(Tensor::try_from(tidx).unwrap());
     }
 
-    (bases, quals, Tensor::try_from(lens).unwrap(), tps)
+    InferenceBatch::new(wids, bases, quals, Tensor::try_from(lens).unwrap(), indices)
 }
 
-fn inference(data: InputData, model: &CModule, device: tch::Device) -> OutputData {
-    let mut logits = Vec::new();
+fn inference(
+    batch: InferenceBatch,
+    model: &CModule,
+    device: tch::Device,
+) -> (Vec<u32>, Vec<Tensor>) {
+    let inputs = [
+        IValue::Tensor(batch.bases.to(device)),
+        IValue::Tensor(batch.quals.to(device)),
+        IValue::Tensor(batch.lens),
+        IValue::TensorList(batch.indices),
+    ];
 
-    for i in (0..data.windows.len()).step_by(BATCH_SIZE) {
-        let batch = &data.windows[i..(i + BATCH_SIZE).min(data.windows.len())];
+    let out = model
+        .forward_is(&inputs)
+        .map(|v| Tensor::try_from(v).unwrap().to(tch::Device::Cpu))
+        .unwrap();
 
-        let max_supported = batch
-            .iter()
-            .map(|f| f.target_positions.len())
-            .max()
-            .unwrap();
-        if max_supported == 0 {
-            let logits_batch =
-                (0..batch.len()).map(|_| Tensor::empty(&[0], (tch::Kind::Float, tch::Device::Cpu)));
-            logits.extend(logits_batch);
+    // Get number of target positions for each window
+    let lens: Vec<i64> = match inputs[2] {
+        IValue::Tensor(ref t) => Vec::try_from(t).unwrap(),
+        _ => unreachable!(),
+    };
 
-            continue;
-        }
+    let logits = out.split_with_sizes(&lens, 0);
 
-        let (bases, quals, lens, tps) = collate(batch);
-        let inputs = [
-            IValue::Tensor(bases.to(device)),
-            IValue::Tensor(quals.to(device)),
-            IValue::Tensor(lens),
-            IValue::TensorList(tps),
-        ];
-
-        let out = model
-            .forward_is(&inputs)
-            .map(|v| Tensor::try_from(v).unwrap().to(tch::Device::Cpu))
-            .unwrap();
-
-        // Get number of target positions for each window
-        let lens: Vec<i64> = match inputs[2] {
-            IValue::Tensor(ref t) => Vec::try_from(t).unwrap(),
-            _ => unreachable!(),
-        };
-
-        let logits_batch: Vec<_> = out.split_with_sizes(&lens, 0);
-        logits.extend(logits_batch);
-    }
-
-    let outputs: Vec<_> = data
-        .windows
-        .into_iter()
-        .zip(logits.into_iter())
-        .map(|(f, t)| (f.wid, f.bases, f.supported, t.try_into().unwrap()))
-        .collect();
-
-    OutputData::new(data.rid, outputs)
+    (batch.wids, logits)
 }
 
 pub(crate) fn inference_worker<P: AsRef<Path>>(
     model_path: P,
     device: tch::Device,
-    input_channel: Receiver<InputData>,
-    output_channel: Sender<OutputData>,
+    input_channel: Receiver<InferenceData>,
+    output_channel: Sender<ConsensusData>,
 ) {
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
@@ -203,23 +213,33 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     let _no_grad = tch::no_grad_guard();
 
     loop {
-        let data = match input_channel.recv() {
+        let mut data = match input_channel.recv() {
             Ok(data) => data,
             Err(_) => break,
         };
 
-        let output = inference(data, &model, device);
-        output_channel.send(output).unwrap();
+        for batch in data.batches {
+            let (wids, logits) = inference(batch, &model, device);
+            wids.into_iter()
+                .zip(logits.into_iter())
+                .for_each(|(wid, l)| {
+                    data.consensus_data.windows[wid as usize]
+                        .logits
+                        .replace(Vec::try_from(l).unwrap());
+                });
+        }
+
+        output_channel.send(data.consensus_data).unwrap();
     }
 }
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl IntoIterator<Item = (u16, Array3<u8>, Vec<u32>)>,
-) -> InputData {
+    features: impl IntoIterator<Item = (Array3<u8>, Vec<usize>)>,
+) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(wid, ref mut feats, supported)| {
+        .map(|(ref mut feats, supported)| {
             // Transpose: [R, L, 2] -> [L, R, 2]
             feats.swap_axes(1, 0);
 
@@ -229,36 +249,29 @@ pub(crate) fn prepare_examples(
                 .index_axis(Axis(2), 1)
                 .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
-            let mut tpos = 0;
-            let mut supp_idx = 0;
-            let tps = feats
-                .slice(s![.., 0, 0])
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, b)| {
-                    if supp_idx < supported.len() && *b != b'*' {
-                        if supported[supp_idx] == tpos {
-                            supp_idx += 1;
-                            tpos += 1;
-                            return Some(idx as i32);
-                        }
+            let tidx = get_target_indices(&bases);
 
-                        tpos += 1;
-                    }
-
-                    None
-                })
-                .collect();
-
-            Features::new(wid, bases, quals, tps, supported)
+            ConsensusWindow::new(bases, quals, tidx, supported, None)
         })
         .collect();
 
-    InputData::new(rid, windows)
+    let batches: Vec<_> = (0u32..)
+        .zip(windows.iter())
+        .filter(|(_, features)| features.supported.len() > 0)
+        .chunks(BATCH_SIZE)
+        .into_iter()
+        .map(|v| {
+            let batch = v.collect::<Vec<_>>();
+            collate(&batch)
+        })
+        .collect();
+
+    let consensus_data = ConsensusData::new(rid, windows);
+    InferenceData::new(consensus_data, batches)
 }
 
-fn consensus(
-    data: OutputData,
+/*fn consensus(
+    data: ConsensusData,
     read: &HAECRecord,
     window_size: usize,
     buffer: &mut Vec<u8>,
@@ -348,12 +361,12 @@ fn consensus(
     }
 
     corrected
-}
+}*/
 
 pub(crate) fn consensus_worker<P: AsRef<Path>>(
     output_path: P,
     reads: &[HAECRecord],
-    receiver: Receiver<OutputData>,
+    receiver: Receiver<ConsensusData>,
     window_size: u32,
 ) {
     let file = File::create(output_path).unwrap();
@@ -372,10 +385,13 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
         output
             .windows
             .iter()
-            .for_each(|(wid, _, supported, logits)| {
-                supported
+            .enumerate()
+            .filter(|(_, window)| window.logits.is_some())
+            .for_each(|(wid, window)| {
+                window
+                    .supported
                     .iter()
-                    .zip(logits.iter())
+                    .zip(window.logits.as_ref().unwrap().iter())
                     .for_each(|(pos, l)| println!("{}\t{}\t{}\t{}", &reads[rid].id, wid, pos, l));
             });
 

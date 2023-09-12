@@ -1,4 +1,4 @@
-use rustc_hash::{FxHashMap as HashMap, FxHasher};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
 use std::fs::{create_dir_all, File};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -15,7 +15,7 @@ use ordered_float::OrderedFloat;
 
 use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
-use crate::inference::{prepare_examples, InputData};
+use crate::inference::{prepare_examples, InferenceData};
 use crate::overlaps::{self, Alignment, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
@@ -374,9 +374,9 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
     feats_output.init(rid, &read.id);
     for i in 0..n_windows {
-        if windows[i].len() == 0 {
+        /*if windows[i].len() == 0 {
             continue;
-        }
+        }*/
 
         let win_len = if i == n_windows - 1 {
             read.seq.len() - i * window_size as usize
@@ -438,7 +438,16 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     feats_output.emit();
 }
 
-fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<u32>
+pub(crate) fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usize> {
+    bases
+        .slice(s![.., 0])
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, b)| if *b != b'*' { Some(idx) } else { None })
+        .collect()
+}
+
+fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<usize>
 where
     S: Data<Elem = u8>,
 {
@@ -478,7 +487,7 @@ where
             .iter()
             .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
         if n_supported >= 2 {
-            supporeted.push(tpos as u32);
+            supporeted.push(tpos);
         }
 
         start = l;
@@ -493,7 +502,7 @@ fn output_features<P: AsRef<Path>>(
     window_id: u16,
     ids: &[&str],
     features: &Array3<u8>,
-    supported: Vec<u32>,
+    supported: &[usize],
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
     let ids_file = File::create(ids_path)?;
@@ -508,7 +517,9 @@ fn output_features<P: AsRef<Path>>(
 
     let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
     let file = File::create(supported_path)?;
-    Array::from_vec(supported).write_npy(file).unwrap();
+    Array::from_iter(supported.iter().map(|v| *v as u16))
+        .write_npy(file)
+        .unwrap();
 
     Ok(())
 }
@@ -517,7 +528,7 @@ pub(crate) trait FeaturesOutput<'a> {
     fn init<'b>(&mut self, rid: u32, rname: &'b str)
     where
         'b: 'a;
-    fn update(&mut self, features: Array3<u8>, supoprted: Vec<u32>, ids: Vec<&str>, wid: u16);
+    fn update(&mut self, features: Array3<u8>, supoprted: Vec<usize>, ids: Vec<&str>, wid: u16);
     fn emit(&mut self);
 }
 
@@ -553,11 +564,11 @@ where
         self.rname.replace(rname);
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, ids: Vec<&str>, wid: u16) {
+    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, ids: Vec<&str>, wid: u16) {
         let output_path = self.base_path.as_ref().join(self.rname.unwrap());
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(&output_path, wid, &ids, &features, supported);
+        output_features(&output_path, wid, &ids, &features, &supported);
     }
 
     fn emit(&mut self) {
@@ -567,14 +578,14 @@ where
 
 #[derive(Clone)]
 pub(crate) struct InferenceOutput<'a> {
-    sender: Sender<InputData>,
+    sender: Sender<InferenceData>,
     rid: u32,
     rname: Option<&'a str>,
-    features: Vec<(u16, Array3<u8>, Vec<u32>)>,
+    features: Vec<(Array3<u8>, Vec<usize>)>,
 }
 
 impl InferenceOutput<'_> {
-    pub(crate) fn new(sender: Sender<InputData>) -> Self {
+    pub(crate) fn new(sender: Sender<InferenceData>) -> Self {
         Self {
             sender,
             rid: u32::MAX,
@@ -594,8 +605,8 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
         self.features.clear();
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<u32>, _ids: Vec<&str>, wid: u16) {
-        self.features.push((wid, features, supported));
+    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, _ids: Vec<&str>, wid: u16) {
+        self.features.push((features, supported));
     }
 
     fn emit(&mut self) {

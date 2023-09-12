@@ -30,6 +30,7 @@ mod windowing;
 
 pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
 const READS_BATCH_SIZE: usize = 50_000;
+pub const BATCH_SIZE: usize = 32;
 
 pub fn generate_features<T, U, V>(
     reads_path: T,
