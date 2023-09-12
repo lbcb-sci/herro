@@ -1,4 +1,6 @@
 use std::{
+    cmp::Reverse,
+    collections::BinaryHeap,
     fs::File,
     io::{BufWriter, Write},
     path::Path,
@@ -6,13 +8,18 @@ use std::{
 
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
+use itertools::MinMaxResult::*;
 use lazy_static::lazy_static;
 use ndarray::{s, Array2, Array3, Axis};
 use rustc_hash::FxHashMap as HashMap;
-use rustc_hash::FxHashSet as HashSet;
+
 use tch::{CModule, IValue, IndexOp, Tensor};
 
-use crate::{features::get_target_indices, haec_io::HAECRecord, BATCH_SIZE};
+use crate::{
+    features::{get_target_indices, TOP_K},
+    haec_io::HAECRecord,
+    BATCH_SIZE,
+};
 
 const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
@@ -52,6 +59,7 @@ lazy_static! {
 
 // Bases, tidx, supported, logits
 pub(crate) struct ConsensusWindow {
+    n_alns: usize,
     bases: Array2<u8>,
     quals: Array2<f32>,
     indices: Vec<usize>,
@@ -61,6 +69,7 @@ pub(crate) struct ConsensusWindow {
 
 impl ConsensusWindow {
     fn new(
+        n_alns: usize,
         bases: Array2<u8>,
         quals: Array2<f32>,
         indices: Vec<usize>,
@@ -68,6 +77,7 @@ impl ConsensusWindow {
         logits: Option<Vec<f32>>,
     ) -> Self {
         Self {
+            n_alns,
             bases,
             quals,
             indices,
@@ -235,11 +245,11 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl IntoIterator<Item = (Array3<u8>, Vec<usize>)>,
+    features: impl IntoIterator<Item = (usize, Array3<u8>, Vec<usize>)>,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(ref mut feats, supported)| {
+        .map(|(n_alns, ref mut feats, supported)| {
             // Transpose: [R, L, 2] -> [L, R, 2]
             feats.swap_axes(1, 0);
 
@@ -251,7 +261,7 @@ pub(crate) fn prepare_examples(
 
             let tidx = get_target_indices(&feats.index_axis(Axis(2), 0));
 
-            ConsensusWindow::new(bases, quals, tidx, supported, None)
+            ConsensusWindow::new(n_alns, bases, quals, tidx, supported, None)
         })
         .collect();
 
@@ -270,98 +280,114 @@ pub(crate) fn prepare_examples(
     InferenceData::new(consensus_data, batches)
 }
 
-/*fn consensus(
+fn two_most_frequent<'a, I>(elements: I) -> Vec<(usize, u8)>
+where
+    I: Iterator<Item = u8>,
+{
+    let mut map = HashMap::default();
+    for x in elements {
+        *map.entry(x).or_default() += 1;
+    }
+
+    let mut heap = BinaryHeap::with_capacity(3);
+    for (x, count) in map.into_iter() {
+        heap.push(Reverse((count, x)));
+        if heap.len() > 2 {
+            heap.pop();
+        }
+    }
+
+    heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
+}
+
+fn consensus(
     data: ConsensusData,
     read: &HAECRecord,
     window_size: usize,
     buffer: &mut Vec<u8>,
-) -> Vec<u8> {
-    let windows: HashMap<_, (_, _)> = data
-        .windows
-        .into_iter()
-        .map(|(w, b, _, l)| (w, (b, l)))
-        .collect();
-    let n_windows = ((read.seq.len() - 1) / window_size) + 1;
-
+) -> Option<Vec<u8>> {
     read.seq.get_sequence(buffer);
     let uncorrected = &buffer[..read.seq.len()];
     let mut corrected: Vec<u8> = Vec::new();
-    for wid in 0..n_windows {
-        if let Some((bases, logits)) = windows.get(&(wid as u16)) {
-            // Get target positions
-            let target = bases.slice(s![.., 0]);
-            let positions: Vec<_> = target
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, b)| {
-                    if BASES_UPPER[*b as usize] != b'*' {
-                        Some(idx)
-                    } else {
-                        None
-                    }
-                })
-                .chain(Some(bases.len_of(Axis(0))).into_iter())
-                .collect();
 
-            (0..positions.len() - 1).zip(logits).for_each(|(i, l)| {
-                if *l <= 0. {
-                    // Non-informative -> correct position
-                    bases
-                        .slice(s![positions[i]..positions[i + 1], ..])
-                        .axis_iter(Axis(0))
-                        .enumerate()
-                        .for_each(|(pos, pos_bases)| {
-                            let mut counts: HashMap<u8, u8> = HashMap::default();
-                            pos_bases.iter().for_each(|b| {
-                                if *b != BASES_MAP[b'.' as usize] {
-                                    *counts.entry(BASES_UPPER[*b as usize]).or_insert(0) += 1;
-                                }
-                            });
+    let minmax = data
+        .windows
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, win)| if win.n_alns > 0 { Some(idx) } else { None })
+        .minmax();
+    let (wid_st, wid_en) = match minmax {
+        NoElements => {
+            return None;
+        }
+        OneElement(wid) => (wid, wid + 1),
+        MinMax(st, en) => (st, en + 1),
+    };
 
-                            let max_occ = counts.iter().map(|(_, c)| *c).max().unwrap();
-                            let most_freq_bases: HashSet<_> = counts
-                                .into_iter()
-                                .filter_map(|(b, c)| if c == max_occ { Some(b) } else { None })
-                                .collect();
-
-                            let tgt_base = BASES_UPPER[target[positions[i] + pos] as usize];
-
-                            if most_freq_bases.len() > 1 {
-                                let base = if most_freq_bases.contains(&tgt_base) {
-                                    tgt_base
-                                } else {
-                                    most_freq_bases.into_iter().min().unwrap()
-                                };
-
-                                if base != b'*' {
-                                    corrected.push(base);
-                                }
-
-                                return;
-                            }
-
-                            /*let base =
-                             *counts.iter().max_by_key(|&(_, count)| count).unwrap().0;*/
-                            let base = most_freq_bases.into_iter().next().unwrap();
-
-                            if base != b'*' {
-                                corrected.push(base);
-                            }
-                        });
-                } else {
-                    // Keep the original base
-                    corrected.push(uncorrected[wid * window_size + i]);
-                }
-            });
-        } else {
+    for (wid, window) in (wid_st..wid_en).zip(data.windows[wid_st..wid_en].iter()) {
+        if window.n_alns < 6 {
             let start = wid * window_size;
-            let end = (start + window_size).min(read.seq.len());
+            let end = (wid + 1) * window_size;
+
             corrected.extend(&uncorrected[start..end]);
+            continue;
+        }
+
+        // Don't analyze empty rows: LxR -> LxN
+        let n_rows = (window.n_alns + 1).min(TOP_K + 1);
+        let bases = window.bases.slice(s![.., ..n_rows]);
+        let maybe_info = match window.supported.len() {
+            0 => HashMap::default(),
+            _ => window
+                .supported
+                .iter()
+                .zip(window.logits.as_ref().unwrap().iter())
+                .map(|(supp, l)| (*supp, *l))
+                .collect(),
+        };
+
+        for tpos in 0..window.indices.len() {
+            if matches!(maybe_info.get(&tpos), Some(l) if *l > 0.) {
+                corrected.push(uncorrected[tpos]);
+            } else {
+                // Correct bases
+                let start = window.indices[tpos];
+                let end = if tpos == window.indices.len() - 1 {
+                    bases.len_of(Axis(0))
+                } else {
+                    window.indices[tpos + 1]
+                };
+
+                for pos in start..end {
+                    let most_common =
+                        two_most_frequent(bases.slice(s![pos, ..]).iter().filter_map(|b| {
+                            if *b != BASES_MAP[b'.' as usize] {
+                                Some(BASES_UPPER[*b as usize])
+                            } else {
+                                None
+                            }
+                        }));
+                    let tbase = BASES_UPPER[bases[[pos, 0]] as usize];
+
+                    let base = if most_common.len() == 2
+                        && most_common[0].0 == most_common[1].0
+                        && (most_common[0].1 == tbase || most_common[1].1 == tbase)
+                    {
+                        tbase
+                    } else {
+                        most_common[0].1
+                    };
+
+                    if base != b'*' {
+                        corrected.push(base);
+                    }
+                }
+            }
         }
     }
 
-    corrected
-}*/
+    Some(corrected)
+}
 
 pub(crate) fn consensus_worker<P: AsRef<Path>>(
     output_path: P,
@@ -381,25 +407,13 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
         };
 
         let rid = output.rid as usize;
+        let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
 
-        output
-            .windows
-            .iter()
-            .enumerate()
-            .filter(|(_, window)| window.logits.is_some())
-            .for_each(|(wid, window)| {
-                window
-                    .supported
-                    .iter()
-                    .zip(window.logits.as_ref().unwrap().iter())
-                    .for_each(|(pos, l)| println!("{}\t{}\t{}\t{}", &reads[rid].id, wid, pos, l));
-            });
-
-        /*let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
-
-        writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
-        writer.write(&seq).unwrap();
-        write!(&mut writer, "\n").unwrap();*/
+        if let Some(s) = seq {
+            writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
+            writer.write(&s).unwrap();
+            write!(&mut writer, "\n").unwrap();
+        }
     }
 }
 

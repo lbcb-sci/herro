@@ -581,7 +581,7 @@ pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InferenceData>,
     rid: u32,
     rname: Option<&'a str>,
-    features: Vec<(Array3<u8>, Vec<usize>)>,
+    features: Vec<(usize, Array3<u8>, Vec<usize>)>,
 }
 
 impl InferenceOutput<'_> {
@@ -605,8 +605,8 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
         self.features.clear();
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, _ids: Vec<&str>, wid: u16) {
-        self.features.push((features, supported));
+    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, ids: Vec<&str>, wid: u16) {
+        self.features.push((ids.len(), features, supported));
     }
 
     fn emit(&mut self) {
