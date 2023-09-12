@@ -327,7 +327,7 @@ fn consensus(
     for (wid, window) in (wid_st..wid_en).zip(data.windows[wid_st..wid_en].iter()) {
         if window.n_alns < 6 {
             let start = wid * window_size;
-            let end = (wid + 1) * window_size;
+            let end = ((wid + 1) * window_size).min(uncorrected.len());
 
             corrected.extend(&uncorrected[start..end]);
             continue;
@@ -348,7 +348,8 @@ fn consensus(
 
         for tpos in 0..window.indices.len() {
             if matches!(maybe_info.get(&tpos), Some(l) if *l > 0.) {
-                corrected.push(uncorrected[tpos]);
+                let base = BASES_UPPER[bases[[window.indices[tpos], 0]] as usize];
+                corrected.push(base);
             } else {
                 // Correct bases
                 let start = window.indices[tpos];
