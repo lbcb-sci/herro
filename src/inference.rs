@@ -249,7 +249,7 @@ pub(crate) fn prepare_examples(
                 .index_axis(Axis(2), 1)
                 .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
-            let tidx = get_target_indices(&bases);
+            let tidx = get_target_indices(&feats.index_axis(Axis(2), 0));
 
             ConsensusWindow::new(bases, quals, tidx, supported, None)
         })
@@ -444,18 +444,27 @@ mod tests {
         let features: Vec<_> = (0..4)
             .into_iter()
             .map(|wid| {
-                let feats: Array3<u8> = read_npy(format!("/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.features.npy", wid)).unwrap();
-                let supported: Array1<u16> = read_npy(format!("/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.supported.npy", wid)).unwrap();
-                (wid as u16, feats, supported.iter().map(|s| *s as u32).collect())
+                let feats: Array3<u8> = read_npy(format!(
+                "/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.features.npy",
+                wid
+            ))
+                .unwrap();
+                let supported: Array1<u16> = read_npy(format!(
+                "/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.supported.npy",
+                wid
+            ))
+                .unwrap();
+                (feats, supported.iter().map(|s| *s as usize).collect())
             })
             .collect();
-        let input_data = prepare_examples(0, features);
+        let mut input_data = prepare_examples(0, features);
+        let batch = input_data.batches.remove(0);
 
-        let output = inference(input_data, &model, device);
+        let output = inference(batch, &model, device);
         let predicted: Array1<f32> = output
-            .windows
+            .1
             .into_iter()
-            .flat_map(|(_, _, _, l)| l.into_iter())
+            .flat_map(|l| Vec::try_from(l).unwrap().into_iter())
             .collect();
 
         let target: Array1<f32> =
