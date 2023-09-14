@@ -12,7 +12,8 @@ use std::{
     cell::RefCell,
     path::Path,
     sync::{Arc, RwLock},
-    thread,
+    thread::{self, sleep},
+    time::Duration,
 };
 
 use crate::{
@@ -235,6 +236,8 @@ pub fn error_correction<T, U, V>(
                 feats_receiver.len(),
                 pred_sender.len()
             );
+
+            sleep(Duration::from_secs(10));
         }
 
         drop(fo_tl);
