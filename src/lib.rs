@@ -160,8 +160,8 @@ pub fn error_correction<T, U, V>(
         });
 
         // Drop the handles so that the inference threads can exit
-        drop(feats_receiver);
-        drop(pred_sender);
+        //drop(feats_receiver);
+        //drop(pred_sender);
 
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
@@ -226,6 +226,15 @@ pub fn error_correction<T, U, V>(
                         &mut *fo.borrow_mut(),
                     )
                 });
+        }
+
+        // DEBUG: Check lengths to inspect bottlenecks
+        loop {
+            println!(
+                "Inference: {}; Consensus: {}",
+                feats_receiver.len(),
+                pred_sender.len()
+            );
         }
 
         drop(fo_tl);

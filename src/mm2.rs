@@ -16,8 +16,8 @@ pub(crate) fn call_mm2<P: AsRef<Path>>(
         .args([
             "-t",
             &threads.to_string(),
-            //"-K",
-            //"4g",
+            "-K",
+            "4g",
             //"--eqx",
             "-cx",
             "ava-ont",
