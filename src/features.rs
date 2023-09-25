@@ -1,4 +1,4 @@
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet, FxHasher};
+use rustc_hash::{FxHashMap as HashMap, FxHasher};
 use std::fs::{create_dir_all, File};
 use std::hash::Hasher;
 use std::io::prelude::*;
@@ -13,7 +13,7 @@ use ndarray::{s, Array, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Ix2};
 use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 
-use crate::aligners::{calculate_accuracy, fix_cigar, get_proper_cigar, CigarOp};
+use crate::aligners::{fix_cigar, get_proper_cigar, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData};
 use crate::overlaps::{self, Alignment, Strand};
@@ -86,6 +86,19 @@ fn get_max_ins_for_window(
     max_ins
 }
 
+fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
+    let (qstart, qend) = if window.overlap.tid == tid {
+        (window.overlap.qstart, window.overlap.qend)
+    } else {
+        (window.overlap.tstart, window.overlap.tend)
+    };
+
+    match window.overlap.strand {
+        Strand::Forward => (qstart + window.qstart, qend),
+        Strand::Reverse => (qstart, qend - window.qstart),
+    }
+}
+
 fn get_features_for_ol_window(
     mut features: ArrayViewMut2<'_, u8>,
     window: &OverlapWindow,
@@ -97,38 +110,38 @@ fn get_features_for_ol_window(
     qbuffer: &mut [u8],
 ) {
     // Handle query sequence
-    let overlap = &window.overlap;
-    let (qstart, qend) = if overlap.tid == tid {
-        (overlap.qstart, overlap.qend)
+    let (qstart, qend) = if window.overlap.tid == tid {
+        (window.overlap.qstart, window.overlap.qend)
     } else {
-        (overlap.tstart, overlap.tend)
+        (window.overlap.tstart, window.overlap.tend)
     };
 
-    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> = match overlap.strand {
-        Strand::Forward => {
-            let range = (qstart + window.qstart) as usize..qend as usize;
-            let qlen = qend as usize - (qstart + window.qstart) as usize;
+    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> =
+        match window.overlap.strand {
+            Strand::Forward => {
+                let range = (qstart + window.qstart) as usize..qend as usize;
+                let qlen = qend as usize - (qstart + window.qstart) as usize;
 
-            query.seq.get_subseq(range.clone(), qbuffer);
-            let quals = &query.qual[range];
+                query.seq.get_subseq(range.clone(), qbuffer);
+                let quals = &query.qual[range];
 
-            Box::new(qbuffer[..qlen].iter().zip(quals))
-        }
-        Strand::Reverse => {
-            let range = qstart as usize..(qend - window.qstart) as usize;
-            let qlen = (qend - window.qstart) as usize - qstart as usize;
+                Box::new(qbuffer[..qlen].iter().zip(quals))
+            }
+            Strand::Reverse => {
+                let range = qstart as usize..(qend - window.qstart) as usize;
+                let qlen = (qend - window.qstart) as usize - qstart as usize;
 
-            query.seq.get_rc_subseq(range.clone(), qbuffer);
-            let quals = &query.qual[range];
+                query.seq.get_rc_subseq(range.clone(), qbuffer);
+                let quals = &query.qual[range];
 
-            Box::new(
-                qbuffer[..qlen]
-                    .iter()
-                    .zip(quals.iter().rev())
-                    .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
-            )
-        }
-    };
+                Box::new(
+                    qbuffer[..qlen]
+                        .iter()
+                        .zip(quals.iter().rev())
+                        .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
+                )
+            }
+        };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
     // Number of cigars for the window
@@ -141,7 +154,7 @@ fn get_features_for_ol_window(
     let cigar = cigar[window.cigar_start_idx as usize..cigar_end].iter();
 
     // Get features
-    let gap = if let Strand::Forward = overlap.strand {
+    let gap = if let Strand::Forward = window.overlap.strand {
         b'*'
     } else {
         b'#'
@@ -305,7 +318,8 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
     });
 
     //accuracy >= 0.80 && !long_indel
-    calculate_accuracy(cigar) >= 0.85 && !long_indel
+    //calculate_accuracy(cigar) >= 0.85 &&
+    !long_indel
 }
 
 pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
@@ -400,8 +414,24 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
                 .get(&ow.overlap.return_other_id(rid))
                 .unwrap();
 
-            let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
-            let acc = calculate_accuracy(&cigar[ow.cigar_start_idx..cigar_end]);
+            let tstart = ow.tstart as usize;
+            let tend = i * window_size as usize + win_len;
+            let tlen = tend - tstart;
+            reads[rid as usize].seq.get_subseq(tstart..tend, tbuf);
+
+            let qid = ow.overlap.return_other_id(rid);
+            let (qstart, qend) = get_query_region(ow, rid);
+            let qlen = (qend - qstart) as usize;
+            match ow.overlap.strand {
+                Strand::Forward => reads[qid as usize]
+                    .seq
+                    .get_subseq(qstart as usize..qend as usize, qbuf),
+                Strand::Reverse => reads[qid as usize]
+                    .seq
+                    .get_rc_subseq(qstart as usize..qend as usize, qbuf),
+            }
+
+            let acc = calculate_accuracy(ow, cigar, &tbuf[..tlen], &qbuf[..qlen]);
             OrderedFloat(-acc)
         });
 
@@ -436,6 +466,55 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     }
 
     feats_output.emit();
+}
+
+fn calculate_accuracy(window: &OverlapWindow, cigar: &[CigarOp], tseq: &[u8], qseq: &[u8]) -> f32 {
+    let (mut tpos, mut qpos) = (0, 0);
+    let (mut m, mut s, mut i, mut d) = (0, 0, 0, 0);
+    for idx in window.cigar_start_idx..=window.cigar_end_idx {
+        let len = if window.cigar_start_idx == window.cigar_end_idx {
+            (window.cigar_end_offset - window.cigar_start_offset) as usize
+        } else if idx == window.cigar_start_idx {
+            (cigar[idx].get_length() - window.cigar_start_offset) as usize
+        } else if idx == window.cigar_end_idx {
+            window.cigar_end_offset as usize
+        } else {
+            cigar[idx].get_length() as usize
+        };
+
+        if len == 0 {
+            break;
+        }
+
+        match cigar[idx] {
+            CigarOp::Match(_) => {
+                for j in 0..len {
+                    let tbase = tseq[tpos + j];
+                    let qbase = qseq[qpos + j];
+
+                    if tbase == qbase {
+                        m += 1;
+                    } else {
+                        s += 1;
+                    }
+                }
+
+                tpos += len;
+                qpos += len;
+            }
+            CigarOp::Mismatch(_) => unreachable!(),
+            CigarOp::Insertion(_) => {
+                i += len;
+                qpos += len;
+            }
+            CigarOp::Deletion(_) => {
+                d += len;
+                tpos += len;
+            }
+        }
+    }
+
+    (m as f32) / ((m + s + i + d) as f32)
 }
 
 pub(crate) fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usize> {

@@ -35,7 +35,7 @@ impl OverlapWindow {
     }
 }
 
-type Windows = Vec<Vec<OverlapWindow>>;
+type Windows<'a> = Vec<Vec<OverlapWindow>>;
 
 pub(crate) fn extract_windows(
     windows: &mut Windows,

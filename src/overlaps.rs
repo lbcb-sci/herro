@@ -4,17 +4,14 @@ use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
 use regex::bytes::Regex;
-use serde::Deserialize;
-use serde::Serialize;
 use std::fmt;
-use std::io::Read;
 
-use std::io::{BufRead, BufReader};
+use std::io::BufRead;
 
 use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::HAECRecord;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
     Forward,
     Reverse,
@@ -31,7 +28,7 @@ impl fmt::Display for Strand {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -78,7 +75,7 @@ impl Overlap {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct Alignment {
     pub overlap: Overlap,
     pub cigar: Vec<CigarOp>,
@@ -104,8 +101,8 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-pub fn parse_paf(read: impl Read, name_to_id: &HashMap<&str, u32>) -> Vec<Alignment> {
-    let mut reader = BufReader::new(read);
+pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&str, u32>) -> Vec<Alignment> {
+    //let mut reader = BufReader::new(read);
 
     let mut buffer = String::new();
     let mut processed = HashSet::default();

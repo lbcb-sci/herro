@@ -1,19 +1,22 @@
 use crossbeam_channel::bounded;
 use features::extract_features;
 
+use glob::glob;
+use haec_io::HAECRecord;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 
-use overlaps::Alignment;
+use overlaps::{parse_paf, Alignment};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use thread_local::ThreadLocal;
 
 use std::{
     cell::RefCell,
+    fs::File,
+    io::{BufRead, BufReader},
     path::Path,
     sync::{Arc, RwLock},
-    thread::{self, sleep},
-    time::Duration,
+    thread::{self},
 };
 
 use crate::{
@@ -37,7 +40,7 @@ pub fn generate_features<T, U, V>(
     reads_path: T,
     overlaps: Option<U>,
     output_path: V,
-    feat_gen_threads: usize,
+    threads: usize,
     window_size: u32,
 ) where
     T: AsRef<Path>,
@@ -59,27 +62,20 @@ pub fn generate_features<T, U, V>(
     let feats_output = FeatsGenOutput::new(output_path);
 
     rayon::ThreadPoolBuilder::new()
-        .num_threads(feat_gen_threads)
+        .num_threads(threads)
         .build_global()
         .unwrap();
 
-    for batch in reads.chunks(READS_BATCH_SIZE).progress() {
-        let alignments = if overlaps.is_none() {
-            let mm2_out = mm2::call_mm2(batch, &reads_path, feat_gen_threads);
-            overlaps::parse_paf(mm2_out, &name_to_id)
+    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> =
+        if let Some(overlaps) = overlaps {
+            let batches = read_batches(&name_to_id, overlaps);
+            Box::new(batches)
         } else {
-            /*let file = File::open(&overlaps.as_ref().unwrap()).unwrap();
-            overlaps::parse_paf(file, &name_to_id)*/
-
-            unimplemented!()
+            let batches = generate_batches(&reads, &name_to_id, &reads_path, threads);
+            Box::new(batches)
         };
 
-        // Parse, filter and extend overlaps
-        let tids: HashSet<_> = batch
-            .iter()
-            .map(|r| *name_to_id.get(&*r.id).unwrap())
-            .collect();
-
+    for (tids, alignments) in batches {
         let mut read_to_alns = HashMap::default();
         alignments.iter().for_each(|aln| {
             if tids.contains(&aln.overlap.tid) {
@@ -97,9 +93,10 @@ pub fn generate_features<T, U, V>(
             }
         });
 
+        let n_targets = read_to_alns.len();
         read_to_alns
             .into_par_iter()
-            .progress_count(batch.len() as u64)
+            .progress_count(n_targets as u64)
             .for_each(|(rid, alns)| {
                 let (target, query) = sequences.get_or(|| {
                     (
@@ -161,8 +158,8 @@ pub fn error_correction<T, U, V>(
         });
 
         // Drop the handles so that the inference threads can exit
-        //drop(feats_receiver);
-        //drop(pred_sender);
+        drop(feats_receiver);
+        drop(pred_sender);
 
         // Create consensus thread
         s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
@@ -172,23 +169,16 @@ pub fn error_correction<T, U, V>(
             .build_global()
             .unwrap();
 
-        for batch in reads.chunks(READS_BATCH_SIZE).progress() {
-            let alignments = if paf_path.is_none() {
-                let mm2_out = mm2::call_mm2(batch, &reads_path, threads);
-                overlaps::parse_paf(mm2_out, &name_to_id)
+        let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> =
+            if let Some(batches) = paf_path {
+                let batches = read_batches(&name_to_id, batches);
+                Box::new(batches)
             } else {
-                /*let file = File::open(&overlaps.as_ref().unwrap()).unwrap();
-                overlaps::parse_paf(file, &name_to_id)*/
-
-                unimplemented!()
+                let batches = generate_batches(&reads, &name_to_id, &reads_path, threads);
+                Box::new(batches)
             };
 
-            // Parse, filter and extend overlaps
-            let tids: HashSet<_> = batch
-                .iter()
-                .map(|r| *name_to_id.get(&*r.id).unwrap())
-                .collect();
-
+        for (tids, alignments) in batches {
             let mut read_to_alns = HashMap::default();
             alignments.iter().for_each(|aln| {
                 if tids.contains(&aln.overlap.tid) {
@@ -206,9 +196,10 @@ pub fn error_correction<T, U, V>(
                 }
             });
 
+            let batch_size = read_to_alns.len();
             read_to_alns
                 .into_par_iter()
-                .progress_count(batch.len() as u64)
+                .progress_count(batch_size as u64)
                 .for_each(|(rid, alns)| {
                     let (target, query) = sequences.get_or(|| {
                         (
@@ -229,18 +220,67 @@ pub fn error_correction<T, U, V>(
                 });
         }
 
-        // DEBUG: Check lengths to inspect bottlenecks
-        loop {
-            println!(
-                "Inference: {}; Consensus: {}",
-                feats_receiver.len(),
-                pred_sender.len()
-            );
-
-            sleep(Duration::from_secs(10));
-        }
-
         drop(fo_tl);
         drop(feats_output);
     });
+}
+
+fn generate_batches<'a, P>(
+    reads: &'a [HAECRecord],
+    name_to_id: &'a HashMap<&str, u32>,
+    reads_path: P,
+    threads: usize,
+) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
+{
+    reads.chunks(READS_BATCH_SIZE).map(move |batch| {
+        let mm2_out = BufReader::new(mm2::call_mm2(batch, &reads_path, threads));
+        let alignments = overlaps::parse_paf(mm2_out, &name_to_id);
+
+        let tids = batch
+            .iter()
+            .map(|r| *name_to_id.get(&*r.id).unwrap())
+            .collect();
+
+        (tids, alignments)
+    })
+}
+
+fn read_batches<'a, P>(
+    name_to_id: &'a HashMap<&str, u32>,
+    batches: P,
+) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
+{
+    let g = batches.as_ref().join("*.oec.zst");
+    glob(g.to_str().unwrap()).unwrap().map(|p| {
+        let mut reader = {
+            let file = File::open(p.unwrap()).unwrap();
+            let reader = zstd::Decoder::new(file).unwrap();
+            BufReader::new(reader)
+        };
+
+        // Read number of target reads
+        let mut buf = String::new();
+        reader.read_line(&mut buf).unwrap();
+        let n_targets: usize = buf.trim().parse().unwrap();
+
+        let tids: HashSet<_> = (0..n_targets)
+            .map(|_| {
+                buf.clear();
+                reader.read_line(&mut buf).unwrap();
+
+                let tname = buf.trim();
+                *name_to_id.get(tname).unwrap()
+            })
+            .collect();
+
+        let alignments = parse_paf(&mut reader, name_to_id);
+
+        (tids, alignments)
+    })
 }

@@ -1,12 +1,11 @@
 #![allow(dead_code)]
 use itertools::Itertools;
-use serde::{Deserialize, Serialize};
 
 use crate::overlaps::Strand;
 
 pub mod wfa;
 
-#[derive(Debug, PartialEq, Copy, Clone, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Copy, Clone, Eq)]
 pub enum CigarOp {
     Match(u32),
     Mismatch(u32),
@@ -122,7 +121,7 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     })
 }*/
 
-pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
+pub(crate) fn calculate_accuracy(cigar: &[CigarOp], tseq: &[u8], qseq: &[u8]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {

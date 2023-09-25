@@ -18,7 +18,7 @@ clap = {version = "~4.4.2", features = ["derive"]}
 needletail = "~0.5.0"
 lazy_static = "~1.4.0"
 itertools = "~0.11.0"
-rayon = "~1.7.0"
+rayon = "~1.8.0"
 thread_local = "~1.1.4"
 indicatif = {version = "~0.17.2", features = ["rayon"]}
 ordered-float = "~3.9.1"
@@ -28,8 +28,8 @@ tch = "0.13.0"
 crossbeam-channel = "~0.5.8"
 rustc-hash = "~1.1.0"
 regex = "~1.9.1"
-serde = {version = "~1.0.188", features = ["derive"]}
-serde_json = "~1.0.105"
+glob = "~0.3.1"
+zstd = "~0.12.4"
 
 [dev-dependencies]
 approx = "~0.5.1"
