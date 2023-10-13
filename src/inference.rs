@@ -382,10 +382,6 @@ fn consensus(
                     if base != b'*' {
                         corrected.push(base);
                     }
-
-                    if read.id == b"48be55d2-7361-4b35-882f-92ee62dcab43" {
-                        println!("{}\t{}\t{}\t{:?}", wid, tpos, tbase, most_common);
-                    }
                 }
             }
         }
