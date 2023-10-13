@@ -382,6 +382,10 @@ fn consensus(
                     if base != b'*' {
                         corrected.push(base);
                     }
+
+                    if read.id == b"48be55d2-7361-4b35-882f-92ee62dcab43" {
+                        println!("{}\t{}\t{}\t{:?}", wid, tpos, tbase, most_common);
+                    }
                 }
             }
         }
@@ -390,15 +394,12 @@ fn consensus(
     Some(corrected)
 }
 
-pub(crate) fn consensus_worker<P: AsRef<Path>>(
-    output_path: P,
+pub(crate) fn consensus_worker(
     reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
+    sender: Sender<(usize, Vec<u8>)>,
     window_size: u32,
 ) {
-    let file = File::create(output_path).unwrap();
-    let mut writer = BufWriter::new(file);
-
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     let mut buffer = vec![0; max_len];
     loop {
@@ -411,9 +412,7 @@ pub(crate) fn consensus_worker<P: AsRef<Path>>(
         let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
 
         if let Some(s) = seq {
-            writeln!(&mut writer, ">{}", &reads[rid].id).unwrap();
-            writer.write(&s).unwrap();
-            write!(&mut writer, "\n").unwrap();
+            sender.send((rid, s)).unwrap();
         }
     }
 }

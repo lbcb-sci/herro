@@ -6,6 +6,7 @@ use haec_io::HAECRecord;
 use indicatif::{ParallelProgressIterator, ProgressIterator};
 
 use overlaps::{parse_paf, Alignment};
+use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
 use rayon::prelude::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use thread_local::ThreadLocal;
@@ -13,7 +14,7 @@ use thread_local::ThreadLocal;
 use std::{
     cell::RefCell,
     fs::File,
-    io::{BufRead, BufReader},
+    io::{prelude::*, BufRead, BufReader, BufWriter},
     path::Path,
     sync::{Arc, RwLock},
     thread::{self},
@@ -34,7 +35,8 @@ mod windowing;
 
 pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
 const READS_BATCH_SIZE: usize = 50_000;
-pub const BATCH_SIZE: usize = 32;
+pub(crate) const BATCH_SIZE: usize = 32;
+pub(crate) const LINE_ENDING: u8 = b'\n';
 
 pub fn generate_features<T, U, V>(
     reads_path: T,
@@ -53,7 +55,7 @@ pub fn generate_features<T, U, V>(
     let name_to_id: HashMap<_, _> = reads
         .iter()
         .enumerate()
-        .map(|(i, e)| (e.id.as_str(), i as u32))
+        .map(|(i, e)| (&*e.id, i as u32))
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
@@ -132,17 +134,21 @@ pub fn error_correction<T, U, V>(
     V: AsRef<Path> + Send + Sync,
 {
     // Get fastq reads
-    let reads = haec_io::get_reads(&reads_path, window_size);
+    let mut reads = haec_io::get_reads(&reads_path, window_size);
+    let mut rng = StdRng::seed_from_u64(42);
+    reads.shuffle(&mut rng);
+
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     let name_to_id: HashMap<_, _> = reads
         .iter()
         .enumerate()
-        .map(|(i, e)| (e.id.as_str(), i as u32))
+        .map(|(i, e)| (&*e.id, i as u32))
         .collect();
     eprintln!("Parsed {} reads.", reads.len());
 
     let (feats_sender, feats_receiver) = bounded(1000);
     let (pred_sender, pred_receiver) = bounded(1000);
+    let (consensus_sender, consesus_receiver) = bounded(1000);
 
     let sequences = Arc::new(ThreadLocal::new());
     let fo_tl = Arc::new(ThreadLocal::new());
@@ -153,16 +159,41 @@ pub fn error_correction<T, U, V>(
         devices.iter().for_each(|d| {
             let fr = feats_receiver.clone();
             let ps = pred_sender.clone();
-
             s.spawn(|| inference_worker(model_path, tch::Device::Cuda(*d), fr, ps));
+
+            let pr = pred_receiver.clone();
+            let cs = consensus_sender.clone();
+            s.spawn(|| consensus_worker(&reads, pr, cs, window_size));
         });
 
         // Drop the handles so that the inference threads can exit
         drop(feats_receiver);
         drop(pred_sender);
 
-        // Create consensus thread
-        s.spawn(|| consensus_worker(output_path, &reads, pred_receiver, window_size));
+        // Drop the handles so that the consensus threads can exit
+        drop(pred_receiver);
+        drop(consensus_sender);
+
+        // Create writer thread
+        let reads_ref = &reads;
+        s.spawn(move || {
+            let file = File::create(output_path).unwrap();
+            let mut writer = BufWriter::new(file);
+
+            loop {
+                let (rid, seq) = match consesus_receiver.recv() {
+                    Ok(out) => out,
+                    Err(_) => break,
+                };
+
+                write!(&mut writer, ">").unwrap();
+                writer.write_all(&reads_ref[rid].id).unwrap();
+                write!(&mut writer, "\n").unwrap();
+
+                writer.write_all(&seq).unwrap();
+                write!(&mut writer, "\n").unwrap();
+            }
+        });
 
         rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
@@ -227,7 +258,7 @@ pub fn error_correction<T, U, V>(
 
 fn generate_batches<'a, P>(
     reads: &'a [HAECRecord],
-    name_to_id: &'a HashMap<&str, u32>,
+    name_to_id: &'a HashMap<&[u8], u32>,
     reads_path: P,
     threads: usize,
 ) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
@@ -235,7 +266,7 @@ where
     P: AsRef<Path>,
     P: 'a,
 {
-    reads.chunks(READS_BATCH_SIZE).map(move |batch| {
+    reads.chunks(READS_BATCH_SIZE).filter_map(move |batch| {
         let mm2_out = BufReader::new(mm2::call_mm2(batch, &reads_path, threads));
         let alignments = overlaps::parse_paf(mm2_out, &name_to_id);
 
@@ -244,12 +275,12 @@ where
             .map(|r| *name_to_id.get(&*r.id).unwrap())
             .collect();
 
-        (tids, alignments)
+        Some((tids, alignments))
     })
 }
 
 fn read_batches<'a, P>(
-    name_to_id: &'a HashMap<&str, u32>,
+    name_to_id: &'a HashMap<&[u8], u32>,
     batches: P,
 ) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
 where
@@ -265,17 +296,18 @@ where
         };
 
         // Read number of target reads
-        let mut buf = String::new();
-        reader.read_line(&mut buf).unwrap();
-        let n_targets: usize = buf.trim().parse().unwrap();
+        let mut buf = Vec::new();
+        let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+        let n_targets = buf[..len - 1]
+            .iter()
+            .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
 
         let tids: HashSet<_> = (0..n_targets)
             .map(|_| {
                 buf.clear();
-                reader.read_line(&mut buf).unwrap();
+                let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
 
-                let tname = buf.trim();
-                *name_to_id.get(tname).unwrap()
+                *name_to_id.get(&buf[..len - 1]).unwrap()
             })
             .collect();
 

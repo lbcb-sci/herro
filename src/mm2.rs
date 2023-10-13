@@ -42,7 +42,9 @@ pub(crate) fn call_mm2<P: AsRef<Path>>(
             let mut buffer = vec![0u8; target.iter().map(|r| r.seq.len()).max().unwrap()];
 
             for read in target {
-                writeln!(stdin, ">{}", read.id).expect("Failed to write to minimap2 stdin");
+                write!(stdin, ">").unwrap();
+                stdin.write_all(&read.id).unwrap();
+                writeln!(stdin, "\n").unwrap();
 
                 read.seq.get_sequence(&mut buffer);
                 stdin

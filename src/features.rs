@@ -457,7 +457,9 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let qids: Vec<&str> = windows[i]
             .iter()
-            .map(|ow| reads[ow.overlap.return_other_id(rid) as usize].id.as_str())
+            .map(|ow| {
+                std::str::from_utf8(&reads[ow.overlap.return_other_id(rid) as usize].id).unwrap()
+            })
             .collect();
 
         let supported = get_supported(&window.index_axis(Axis(2), 0));
@@ -604,7 +606,7 @@ fn output_features<P: AsRef<Path>>(
 }
 
 pub(crate) trait FeaturesOutput<'a> {
-    fn init<'b>(&mut self, rid: u32, rname: &'b str)
+    fn init<'b>(&mut self, rid: u32, rname: &'b [u8])
     where
         'b: 'a;
     fn update(&mut self, features: Array3<u8>, supoprted: Vec<usize>, ids: Vec<&str>, wid: u16);
@@ -617,7 +619,7 @@ where
     T: AsRef<Path> + Clone,
 {
     base_path: T,
-    rname: Option<&'a str>,
+    rname: Option<&'a [u8]>,
 }
 
 impl<T> FeatsGenOutput<'_, T>
@@ -636,7 +638,7 @@ impl<'a, T> FeaturesOutput<'a> for FeatsGenOutput<'a, T>
 where
     T: AsRef<Path> + Clone,
 {
-    fn init<'b>(&mut self, _rid: u32, rname: &'b str)
+    fn init<'b>(&mut self, _rid: u32, rname: &'b [u8])
     where
         'b: 'a,
     {
@@ -644,7 +646,8 @@ where
     }
 
     fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, ids: Vec<&str>, wid: u16) {
-        let output_path = self.base_path.as_ref().join(self.rname.unwrap());
+        let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
+        let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
         output_features(&output_path, wid, &ids, &features, &supported);
@@ -659,7 +662,7 @@ where
 pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InferenceData>,
     rid: u32,
-    rname: Option<&'a str>,
+    rname: Option<&'a [u8]>,
     features: Vec<(usize, Array3<u8>, Vec<usize>)>,
 }
 
@@ -675,7 +678,7 @@ impl InferenceOutput<'_> {
 }
 
 impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
-    fn init<'b>(&mut self, rid: u32, rname: &'b str)
+    fn init<'b>(&mut self, rid: u32, rname: &'b [u8])
     where
         'b: 'a,
     {

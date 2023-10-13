@@ -9,7 +9,9 @@ use std::fmt;
 use std::io::BufRead;
 
 use crate::aligners::{cigar_to_string, CigarOp};
+use crate::haec_io::bytes_to_u32;
 use crate::haec_io::HAECRecord;
+use crate::LINE_ENDING;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
@@ -101,19 +103,19 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&str, u32>) -> Vec<Alignment> {
+pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&[u8], u32>) -> Vec<Alignment> {
     //let mut reader = BufReader::new(read);
 
-    let mut buffer = String::new();
+    let mut buffer = Vec::new();
     let mut processed = HashSet::default();
 
     let mut alignments = Vec::new();
-    while let Ok(len) = reader.read_line(&mut buffer) {
+    while let Ok(len) = reader.read_until(LINE_ENDING, &mut buffer) {
         if len == 0 {
             break;
         }
 
-        let mut data = buffer[..len - 1].split("\t");
+        let mut data = buffer[..len - 1].split(|&c| c == b'\t');
 
         let qid = match name_to_id.get(data.next().unwrap()) {
             Some(qid) => *qid,
@@ -122,13 +124,13 @@ pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&str, u32>) -> V
                 continue;
             }
         };
-        let qlen: u32 = data.next().unwrap().parse().unwrap();
-        let qstart: u32 = data.next().unwrap().parse().unwrap();
-        let qend: u32 = data.next().unwrap().parse().unwrap();
+        let qlen = bytes_to_u32(data.next().unwrap());
+        let qstart = bytes_to_u32(data.next().unwrap());
+        let qend = bytes_to_u32(data.next().unwrap());
 
-        let strand = match data.next().unwrap() {
-            "+" => Strand::Forward,
-            "-" => Strand::Reverse,
+        let strand = match data.next().unwrap()[0] {
+            b'+' => Strand::Forward,
+            b'-' => Strand::Reverse,
             _ => panic!("Invalid strand character."),
         };
 
@@ -139,9 +141,9 @@ pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&str, u32>) -> V
                 continue;
             }
         };
-        let tlen: u32 = data.next().unwrap().parse().unwrap();
-        let tstart: u32 = data.next().unwrap().parse().unwrap();
-        let tend: u32 = data.next().unwrap().parse().unwrap();
+        let tlen: u32 = bytes_to_u32(data.next().unwrap());
+        let tstart: u32 = bytes_to_u32(data.next().unwrap());
+        let tend: u32 = bytes_to_u32(data.next().unwrap());
 
         let cigar = data.last().unwrap();
         let cigar = parse_cigar(&cigar[5..]);
@@ -170,12 +172,12 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
     for aln in alignments {
         println!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            reads[aln.overlap.qid as usize].id,
+            std::str::from_utf8(&reads[aln.overlap.qid as usize].id).unwrap(),
             aln.overlap.qlen,
             aln.overlap.qstart,
             aln.overlap.qend,
             aln.overlap.strand,
-            reads[aln.overlap.tid as usize].id,
+            std::str::from_utf8(&reads[aln.overlap.tid as usize].id).unwrap(),
             aln.overlap.tlen,
             aln.overlap.tstart,
             aln.overlap.tend,
@@ -191,9 +193,9 @@ lazy_static! {
         .unwrap();
 }
 
-fn parse_cigar(string: &str) -> Vec<CigarOp> {
+fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     CIGAR_PATTERN
-        .captures_iter(string.as_bytes())
+        .captures_iter(cigar)
         .map(|c| {
             let (_, [l, op]) = c.extract();
 

@@ -1,5 +1,5 @@
 use core::panic;
-use std::{ops::RangeBounds, path::Path, str::from_utf8};
+use std::{ops::RangeBounds, path::Path};
 
 use needletail::parse_fastx_file;
 
@@ -16,14 +16,14 @@ const BASE_ENCODING: [usize; 128] = [
 const BASE_DECODING: [u8; 4] = [b'A', b'C', b'G', b'T'];
 
 pub struct HAECRecord {
-    pub id: String,
-    pub description: Option<String>,
+    pub id: Vec<u8>,
+    pub description: Option<Vec<u8>>,
     pub seq: HAECSeq,
     pub qual: Vec<u8>,
 }
 
 impl HAECRecord {
-    fn new(id: String, description: Option<String>, seq: HAECSeq, qual: Vec<u8>) -> Self {
+    fn new(id: Vec<u8>, description: Option<Vec<u8>>, seq: HAECSeq, qual: Vec<u8>) -> Self {
         HAECRecord {
             id,
             description,
@@ -43,11 +43,9 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
             continue;
         }
 
-        let mut split = from_utf8(record.id())
-            .expect("Cannot parse the sequence id")
-            .splitn(2, " ");
-        let id = split.next().expect("Cannot be empty").to_owned();
-        let description = split.next().map(|s| s.to_owned());
+        let mut split = record.id().splitn(2, |c| *c == b' ');
+        let id = split.next().expect("Invalid read id.").to_owned();
+        let description = split.next().map(|d| d.to_owned());
 
         let seq = HAECSeq::from(&*record.seq());
         let qual = record
@@ -159,6 +157,10 @@ fn decode<R: RangeBounds<usize>>(
         let code = ((sequence[i >> 5] >> ((i << 1) & 63)) & 3) ^ rc_mask;
         buffer[idx] = BASE_DECODING[code];
     });
+}
+
+pub(crate) fn bytes_to_u32(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0, |acc, &d| acc * 10 + (d - b'0') as u32)
 }
 
 #[cfg(test)]
