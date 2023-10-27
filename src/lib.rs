@@ -34,7 +34,7 @@ mod overlaps;
 mod windowing;
 
 pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
-const READS_BATCH_SIZE: usize = 50_000;
+const READS_BATCH_SIZE: usize = 100_000;
 pub(crate) const BATCH_SIZE: usize = 32;
 pub(crate) const LINE_ENDING: u8 = b'\n';
 
@@ -87,12 +87,12 @@ pub fn generate_features<T, U, V>(
                     .push(aln);
             }
 
-            if tids.contains(&aln.overlap.qid) {
+            /*if tids.contains(&aln.overlap.qid) {
                 read_to_alns
                     .entry(aln.overlap.qid)
                     .or_insert_with(|| Vec::new())
                     .push(aln);
-            }
+            }*/
         });
 
         let n_targets = read_to_alns.len();
@@ -219,12 +219,12 @@ pub fn error_correction<T, U, V>(
                         .push(aln);
                 }
 
-                if tids.contains(&aln.overlap.qid) {
+                /*if tids.contains(&aln.overlap.qid) {
                     read_to_alns
                         .entry(aln.overlap.qid)
                         .or_insert_with(|| Vec::new())
                         .push(aln);
-                }
+                }*/
             });
 
             let batch_size = read_to_alns.len();
