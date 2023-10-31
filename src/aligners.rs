@@ -3,8 +3,6 @@ use itertools::Itertools;
 
 use crate::overlaps::Strand;
 
-pub mod wfa;
-
 #[derive(Debug, PartialEq, Copy, Clone, Eq)]
 pub enum CigarOp {
     Match(u32),

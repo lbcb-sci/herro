@@ -160,7 +160,13 @@ fn decode<R: RangeBounds<usize>>(
 }
 
 pub(crate) fn bytes_to_u32(bytes: &[u8]) -> u32 {
-    bytes.iter().fold(0, |acc, &d| acc * 10 + (d - b'0') as u32)
+    bytes.iter().fold(0, |acc, &d| {
+        if d.is_ascii_digit() {
+            acc * 10 + (d - b'0') as u32
+        } else {
+            panic!("Character is not a valid digit");
+        }
+    })
 }
 
 #[cfg(test)]

@@ -1,9 +1,6 @@
-use lazy_static::lazy_static;
-use regex::bytes::RegexBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 
-use regex::bytes::Regex;
 use std::fmt;
 
 use std::io::BufRead;
@@ -186,28 +183,24 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
     }
 }
 
-lazy_static! {
-    static ref CIGAR_PATTERN: Regex = RegexBuilder::new(r"(\d+)([MIDNSHP=X])")
-        .unicode(false)
-        .build()
-        .unwrap();
-}
-
 fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
-    CIGAR_PATTERN
-        .captures_iter(cigar)
-        .map(|c| {
-            let (_, [l, op]) = c.extract();
+    let mut ops = Vec::new();
 
-            let l = l.iter().fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
-            match op {
-                b"M" => CigarOp::Match(l),
-                b"I" => CigarOp::Insertion(l),
-                b"D" => CigarOp::Deletion(l),
-                b"X" => CigarOp::Mismatch(l),
-                b"=" => CigarOp::Match(l),
-                _ => panic!("Invalid CIGAR operation."),
+    let mut l = 0;
+    for &c in cigar {
+        if c.is_ascii_digit() {
+            l = l * 10 + (c - b'0') as u32;
+        } else {
+            match c {
+                b'M' => ops.push(CigarOp::Match(l)),
+                b'I' => ops.push(CigarOp::Insertion(l)),
+                b'D' => ops.push(CigarOp::Deletion(l)),
+                _ => panic!("Invalid CIGAR character."),
             }
-        })
-        .collect()
+
+            l = 0;
+        }
+    }
+
+    ops
 }

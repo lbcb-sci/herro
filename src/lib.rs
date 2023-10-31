@@ -3,7 +3,7 @@ use features::extract_features;
 
 use glob::glob;
 use haec_io::HAECRecord;
-use indicatif::{ParallelProgressIterator, ProgressIterator};
+use indicatif::ParallelProgressIterator;
 
 use overlaps::{parse_paf, Alignment};
 use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
