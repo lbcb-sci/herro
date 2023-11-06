@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::{error_correction, generate_features};
+use ont_haec_rs::{error_correction, generate_features, AlnMode};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -16,9 +16,19 @@ enum Commands {
 }
 
 #[derive(Args)]
+#[group(required = false, multiple = false)]
+struct AlignmentsIO {
+    #[arg(long)]
+    read_alns: Option<String>,
+
+    #[arg(long)]
+    write_alns: Option<String>,
+}
+
+#[derive(Args)]
 struct FeatGenArgs {
-    #[arg(short = 'o')]
-    overlaps: Option<String>,
+    #[command(flatten)]
+    alns: AlignmentsIO,
 
     #[arg(short = 'w', default_value = "4096")]
     window_size: u32,
@@ -33,8 +43,8 @@ struct FeatGenArgs {
 
 #[derive(Args)]
 struct InferenceArgs {
-    #[arg(short = 'o')]
-    overlaps: Option<String>,
+    #[command(flatten)]
+    alns: AlignmentsIO,
 
     #[arg(short = 'w', default_value = "4096")]
     window_size: u32,
@@ -58,22 +68,38 @@ fn main() {
 
     match cli.command {
         Commands::Features(args) => {
+            let mode = match (args.alns.read_alns, args.alns.write_alns) {
+                (None, None) => AlnMode::None,
+                (Some(p), None) => AlnMode::Read(p),
+                (None, Some(p)) => AlnMode::Write(p),
+                _ => unreachable!(),
+            };
+
             generate_features(
                 args.reads,
-                args.overlaps,
                 args.output,
                 args.feat_gen_threads,
                 args.window_size,
+                mode,
             );
         }
-        Commands::Inference(args) => error_correction(
-            args.reads,
-            args.overlaps,
-            &args.model,
-            args.output,
-            args.feat_gen_threads,
-            args.window_size,
-            &args.devices,
-        ),
+        Commands::Inference(args) => {
+            let mode = match (args.alns.read_alns, args.alns.write_alns) {
+                (None, None) => AlnMode::None,
+                (Some(p), None) => AlnMode::Read(p),
+                (None, Some(p)) => AlnMode::Write(p),
+                _ => unreachable!(),
+            };
+
+            error_correction(
+                args.reads,
+                &args.model,
+                args.output,
+                args.feat_gen_threads,
+                args.window_size,
+                &args.devices,
+                mode,
+            );
+        }
     }
 }

@@ -1,9 +1,13 @@
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
+use zstd::stream::AutoFinishEncoder;
 
 use std::fmt;
 
+use std::fs::File;
 use std::io::BufRead;
+use std::io::BufWriter;
+use std::io::Write;
 
 use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::bytes_to_u32;
@@ -100,7 +104,11 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&[u8], u32>) -> Vec<Alignment> {
+pub fn parse_paf(
+    mut reader: impl BufRead,
+    name_to_id: &HashMap<&[u8], u32>,
+    mut alns_writer: Option<&mut AutoFinishEncoder<BufWriter<File>>>,
+) -> Vec<Alignment> {
     //let mut reader = BufReader::new(read);
 
     let mut buffer = Vec::new();
@@ -145,13 +153,14 @@ pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&[u8], u32>) -> 
         let cigar = data.last().unwrap();
         let cigar = parse_cigar(&cigar[5..]);
 
-        buffer.clear();
         if tid == qid {
             // Cannot have self-overlaps
+            buffer.clear();
             continue;
         }
 
         if processed.contains(&(qid, tid)) {
+            buffer.clear();
             continue; // We assume the first overlap between two reads is the best one
         }
         processed.insert((qid, tid));
@@ -159,6 +168,12 @@ pub fn parse_paf(mut reader: impl BufRead, name_to_id: &HashMap<&[u8], u32>) -> 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         let alignment = Alignment::new(overlap, cigar);
         alignments.push(alignment);
+
+        if let Some(ref mut aw) = alns_writer {
+            aw.write_all(&buffer[..len]).unwrap();
+        }
+
+        buffer.clear();
     }
 
     alignments
