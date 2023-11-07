@@ -3,15 +3,22 @@ set -e
 #set -x
 
 # enter the paths to these tools, or just leave it if they are in PATH
+script_dir=$(dirname "$0")
+porechop_script="${script_dir}/porechop_with_split.sh"
+no_split_script="${script_dir}/no_split.sh"
 seqkit='seqkit'
-porechop='porechop'
 duplex_tools='duplex_tools'
 
-if [ "$#" -ne 3 ]; then
-    echo "This script requires 3 arguments:"
+format=fastq.gz
+
+
+if [ "$#" -ne 4 ]; then
+    echo "Please place porechop_with_split.sh and no_split.sh in the same directory as this script." 
+    echo "This script requires 4 arguments:"
     echo "1. The input sequence file. e.g. input.fastq"
-    echo "2. The output prefix. e.g. output/preprocessed"
+    echo "2. The output prefix. e.g. 'preprocessed' or 'output_dir/preprocessed'"
     echo "3. The number of threads to be used."
+    echo "4. The number of parts to split the inputs into for porechop (since RAM usage may be high)."
     exit 
 fi
 
@@ -20,13 +27,16 @@ fi
 input=$1
 output_prefix=$2
 num_threads=$3
+split_parts=$4
 
-# format for porechop output and seqkit filtering output
-format=fastq.gz
+if [ "${split_parts}" -eq 1 ]; then
+  $no_split_script $input $output_prefix $num_threads
+  exit    
+fi
 
 
 output_dir=$(dirname $output_prefix)
-#input_basename=$(basename "${input%.*}")
+
 if [ ! -d $output_dir ]; then
   mkdir $output_dir
 fi
@@ -34,9 +44,9 @@ fi
 echo "The starting date/time: $(date)." 
 SECONDS=0
 
-# porechop 
+# porechop
 porechop_output="${output_dir}/porechopped.${format}"
-$porechop --threads $num_threads -i $input --format $format -o $porechop_output --adapter_threshold 95
+$porechop_script $input "${output_dir}/porechopped" $split_parts $num_threads
 
 # duplex_tools
 duplex_tools_input_dir="${output_dir}/duplex_tools_input_dir"
@@ -60,5 +70,6 @@ rm -r $duplex_tools_output_dir
 
 echo "The ending date/time: $(date)." 
 echo "Time taken: ${SECONDS} seconds" 
+
 
 
