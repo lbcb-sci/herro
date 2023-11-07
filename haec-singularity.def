@@ -1,0 +1,56 @@
+Bootstrap: docker
+From: nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04
+Stage: devel
+
+%files
+    * /ont-haec-rs/
+
+%post
+    # Get essential packages
+    apt-get update
+    apt-get install -y wget git unzip curl build-essential zlib1g-dev zstd
+
+    # Build minimap2
+    git clone https://github.com/lh3/minimap2.git && cd minimap2 && make
+    cd /
+
+    # Download rustc
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    export PATH="/root/.cargo/bin:${PATH}"
+
+    # Get libtorch
+    wget -q -O libtorch.zip https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip
+    unzip -q libtorch.zip && rm libtorch.zip
+    export LIBTORCH=/libtorch
+    export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
+
+    # Get ont-haec-rs and build
+    # git clone -b mm2 https://github.com/dominikstanojevic/ont-haec-rs.git ont-haec-rs
+    cd ont-haec-rs && RUSTFLAGS="-Ctarget-cpu=native" cargo build -q --release
+
+
+Bootstrap: docker
+From: nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04
+Stage: final
+
+%files from devel
+    /minimap2/minimap2 /bin/minimap2
+    /ont-haec-rs/target/release/ont-haec-rs /bin/ont-haec-rs
+    /libtorch /libs/
+
+%environment
+    export LIBTORCH=/libs/libtorch
+    export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
+
+%post
+    # Get essential packages
+    apt-get update
+    apt-get install -y libgomp1 zlib1g-dev zstd
+
+%runscript
+    ont-haec-rs "$@"
+
+%labels
+    Author Dominik Stanojevic
+    Version v0.0.1
+    Name ont-haec
