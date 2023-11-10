@@ -1,4 +1,4 @@
-name: haec-preprocess
+name: haec
 channels:
   - conda-forge
   - bioconda
