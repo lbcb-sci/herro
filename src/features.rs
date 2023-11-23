@@ -1,6 +1,6 @@
-use rustc_hash::{FxHashMap as HashMap, FxHasher};
+use npyz::WriterBuilder;
+use rustc_hash::FxHashMap as HashMap;
 use std::fs::{create_dir_all, File};
-use std::hash::Hasher;
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
@@ -10,7 +10,6 @@ use crossbeam_channel::Sender;
 
 use lazy_static::lazy_static;
 use ndarray::{s, Array, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Ix2};
-use ndarray_npy::WriteNpyExt;
 use ordered_float::OrderedFloat;
 
 use crate::aligners::{fix_cigar, get_proper_cigar, CigarOp};
@@ -528,17 +527,48 @@ pub(crate) fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) 
         .collect()
 }
 
-fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<usize>
+fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<SupportedPos>
 where
     S: Data<Elem = u8>,
 {
-    let len = bases.shape()[1];
-    let mut counter: HashMap<u64, u8> = HashMap::default();
+    // bases -> [R, L]
+
+    let mut counter: HashMap<u8, u8> = HashMap::default();
+    counter.insert(b'A', 0);
+    counter.insert(b'C', 0);
+    counter.insert(b'G', 0);
+    counter.insert(b'T', 0);
+    counter.insert(b'*', 0);
+
     let mut supporeted = Vec::new();
 
-    let mut start = 0;
-    let mut tpos = 0;
-    for l in 1..len + 1 {
+    let (mut tpos, mut ins) = (-1i16, 0);
+    for col in bases.axis_iter(Axis(1)) {
+        if col[0] == b'*' {
+            ins += 1;
+        } else {
+            tpos += 1;
+            ins = 0;
+        }
+
+        counter.iter_mut().for_each(|(_, c)| *c = 0);
+        col.iter().for_each(|&b| {
+            if b == b'.' {
+                return;
+            }
+
+            *counter.get_mut(&BASE_FORWARD[b as usize]).unwrap() += 1;
+        });
+
+        let n_supported = counter
+            .iter()
+            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
+        if n_supported >= 2 {
+            supporeted.push(SupportedPos::new(tpos as u16, ins));
+        }
+    }
+
+    /*for l in 1..len + 1 {
         if l != len && bases[[0, l]] == b'*' {
             // Gap in target -> do not test
             continue;
@@ -573,7 +603,7 @@ where
 
         start = l;
         tpos += 1;
-    }
+    }*/
 
     supporeted
 }
@@ -583,7 +613,7 @@ fn output_features<P: AsRef<Path>>(
     window_id: u16,
     ids: &[&str],
     features: &Array3<u8>,
-    supported: &[usize],
+    supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
     let ids_file = File::create(ids_path)?;
@@ -593,14 +623,22 @@ fn output_features<P: AsRef<Path>>(
     }
 
     let features_path = path.as_ref().join(format!("{}.features.npy", window_id));
-    let file = File::create(features_path)?;
-    features.write_npy(file).unwrap();
+    let shape: Vec<_> = features.shape().iter().map(|&s| s as u64).collect();
+    let mut writer = npyz::WriteOptions::new()
+        .default_dtype()
+        .shape(&shape)
+        .writer(BufWriter::new(File::create(features_path)?))
+        .begin_nd()?;
+    writer.extend(features.iter())?;
+    writer.finish()?;
 
     let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
-    let file = File::create(supported_path)?;
-    Array::from_iter(supported.iter().map(|v| *v as u16))
-        .write_npy(file)
-        .unwrap();
+    let mut writer = npyz::WriteOptions::new()
+        .default_dtype()
+        .writer(BufWriter::new(File::create(supported_path)?))
+        .begin_1d()?;
+    writer.extend(supported)?;
+    writer.finish()?;
 
     Ok(())
 }
@@ -609,7 +647,13 @@ pub(crate) trait FeaturesOutput<'a> {
     fn init<'b>(&mut self, rid: u32, rname: &'b [u8])
     where
         'b: 'a;
-    fn update(&mut self, features: Array3<u8>, supoprted: Vec<usize>, ids: Vec<&str>, wid: u16);
+    fn update(
+        &mut self,
+        features: Array3<u8>,
+        supported: Vec<SupportedPos>,
+        ids: Vec<&str>,
+        wid: u16,
+    );
     fn emit(&mut self);
 }
 
@@ -645,12 +689,18 @@ where
         self.rname.replace(rname);
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, ids: Vec<&str>, wid: u16) {
+    fn update(
+        &mut self,
+        features: Array3<u8>,
+        supported: Vec<SupportedPos>,
+        ids: Vec<&str>,
+        wid: u16,
+    ) {
         let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
         let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(&output_path, wid, &ids, &features, &supported);
+        output_features(&output_path, wid, &ids, &features, supported.into_iter());
     }
 
     fn emit(&mut self) {
@@ -687,12 +737,34 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
         self.features.clear();
     }
 
-    fn update(&mut self, features: Array3<u8>, supported: Vec<usize>, ids: Vec<&str>, wid: u16) {
-        self.features.push((ids.len(), features, supported));
+    fn update(
+        &mut self,
+        features: Array3<u8>,
+        supported: Vec<SupportedPos>,
+        ids: Vec<&str>,
+        _wid: u16,
+    ) {
+        self.features.push((
+            ids.len(),
+            features,
+            supported.into_iter().map(|sp| sp.pos as usize).collect(),
+        ));
     }
 
     fn emit(&mut self) {
         let data = prepare_examples(self.rid, self.features.drain(..));
         self.sender.send(data).unwrap();
+    }
+}
+
+#[derive(npyz::AutoSerialize, npyz::Serialize)]
+pub(crate) struct SupportedPos {
+    pos: u16,
+    ins: u8,
+}
+
+impl SupportedPos {
+    fn new(pos: u16, ins: u8) -> Self {
+        SupportedPos { pos, ins }
     }
 }

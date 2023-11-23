@@ -419,7 +419,6 @@ mod tests {
 
     use approx::assert_relative_eq;
     use ndarray::{Array1, Array3};
-    use ndarray_npy::read_npy;
 
     use super::{inference, prepare_examples};
 
