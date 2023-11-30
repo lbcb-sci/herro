@@ -196,17 +196,28 @@ pub fn error_correction<T, U, V>(
             let mut writer = BufWriter::new(file);
 
             loop {
-                let (rid, seq) = match consesus_receiver.recv() {
+                let (rid, seqs) = match consesus_receiver.recv() {
                     Ok(out) => out,
                     Err(_) => break,
                 };
 
-                write!(&mut writer, ">").unwrap();
-                writer.write_all(&reads_ref[rid].id).unwrap();
-                write!(&mut writer, "\n").unwrap();
+                if seqs.len() == 1 {
+                    write!(&mut writer, ">").unwrap();
+                    writer.write_all(&reads_ref[rid].id).unwrap();
+                    write!(&mut writer, "\n").unwrap();
 
-                writer.write_all(&seq).unwrap();
-                write!(&mut writer, "\n").unwrap();
+                    writer.write_all(&seqs[0]).unwrap();
+                    write!(&mut writer, "\n").unwrap();
+                } else {
+                    for (i, seq) in seqs.into_iter().enumerate() {
+                        write!(&mut writer, ">").unwrap();
+                        writer.write_all(&reads_ref[rid].id).unwrap();
+                        write!(&mut writer, "_{}\n", i).unwrap();
+
+                        writer.write_all(&seq).unwrap();
+                        write!(&mut writer, "\n").unwrap();
+                    }
+                }
             }
         });
 

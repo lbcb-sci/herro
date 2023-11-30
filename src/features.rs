@@ -713,7 +713,7 @@ pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InferenceData>,
     rid: u32,
     rname: Option<&'a [u8]>,
-    features: Vec<(usize, Array3<u8>, Vec<usize>)>,
+    features: Vec<(usize, Array3<u8>, Vec<SupportedPos>)>,
 }
 
 impl InferenceOutput<'_> {
@@ -744,11 +744,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
         ids: Vec<&str>,
         _wid: u16,
     ) {
-        self.features.push((
-            ids.len(),
-            features,
-            supported.into_iter().map(|sp| sp.pos as usize).collect(),
-        ));
+        self.features.push((ids.len(), features, supported));
     }
 
     fn emit(&mut self) {
@@ -757,14 +753,14 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
     }
 }
 
-#[derive(npyz::AutoSerialize, npyz::Serialize)]
+#[derive(npyz::AutoSerialize, npyz::Serialize, PartialEq, Eq, Hash, Clone, Copy)]
 pub(crate) struct SupportedPos {
-    pos: u16,
-    ins: u8,
+    pub pos: u16,
+    pub ins: u8,
 }
 
 impl SupportedPos {
-    fn new(pos: u16, ins: u8) -> Self {
+    pub fn new(pos: u16, ins: u8) -> Self {
         SupportedPos { pos, ins }
     }
 }

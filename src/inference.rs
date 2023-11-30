@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap as HashMap;
 use tch::{CModule, IValue, IndexOp, Tensor};
 
 use crate::{
-    features::{get_target_indices, TOP_K},
+    features::{get_target_indices, SupportedPos, TOP_K},
     haec_io::HAECRecord,
     BATCH_SIZE,
 };
@@ -63,8 +63,9 @@ pub(crate) struct ConsensusWindow {
     bases: Array2<u8>,
     quals: Array2<f32>,
     indices: Vec<usize>,
-    supported: Vec<usize>,
-    logits: Option<Vec<f32>>,
+    supported: Vec<SupportedPos>,
+    info_logits: Option<Vec<f32>>,
+    bases_logits: Option<Vec<u8>>,
 }
 
 impl ConsensusWindow {
@@ -73,8 +74,9 @@ impl ConsensusWindow {
         bases: Array2<u8>,
         quals: Array2<f32>,
         indices: Vec<usize>,
-        supported: Vec<usize>,
-        logits: Option<Vec<f32>>,
+        supported: Vec<SupportedPos>,
+        info_logits: Option<Vec<f32>>,
+        bases_logits: Option<Vec<u8>>,
     ) -> Self {
         Self {
             n_alns,
@@ -82,7 +84,8 @@ impl ConsensusWindow {
             quals,
             indices,
             supported,
-            logits,
+            info_logits,
+            bases_logits,
         }
     }
 }
@@ -176,7 +179,11 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
 
         lens.push(f.supported.len() as i32);
 
-        let tidx: Vec<_> = f.supported.iter().map(|&sp| f.indices[sp] as i32).collect();
+        let tidx: Vec<_> = f
+            .supported
+            .iter()
+            .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
+            .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
     }
 
@@ -187,7 +194,7 @@ fn inference(
     batch: InferenceBatch,
     model: &CModule,
     device: tch::Device,
-) -> (Vec<u32>, Vec<Tensor>) {
+) -> (Vec<u32>, Vec<Tensor>, Vec<Tensor>) {
     let inputs = [
         IValue::Tensor(batch.bases.to(device)),
         IValue::Tensor(batch.quals.to(device)),
@@ -195,10 +202,8 @@ fn inference(
         IValue::TensorList(batch.indices),
     ];
 
-    let out = model
-        .forward_is(&inputs)
-        .map(|v| Tensor::try_from(v).unwrap().to(tch::Device::Cpu))
-        .unwrap();
+    let (info_logits, bases_logits) =
+        <(Tensor, Tensor)>::try_from(model.forward_is(&inputs).unwrap()).unwrap();
 
     // Get number of target positions for each window
     let lens: Vec<i64> = match inputs[2] {
@@ -206,9 +211,13 @@ fn inference(
         _ => unreachable!(),
     };
 
-    let logits = out.split_with_sizes(&lens, 0);
+    let info_logits = info_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
+    let bases_logits = bases_logits
+        .argmax(1, false)
+        .to(tch::Device::Cpu)
+        .split_with_sizes(&lens, 0);
 
-    (batch.wids, logits)
+    (batch.wids, info_logits, bases_logits)
 }
 
 pub(crate) fn inference_worker<P: AsRef<Path>>(
@@ -229,13 +238,18 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
         };
 
         for batch in data.batches {
-            let (wids, logits) = inference(batch, &model, device);
+            let (wids, info_logits, bases_logits) = inference(batch, &model, device);
             wids.into_iter()
-                .zip(logits.into_iter())
-                .for_each(|(wid, l)| {
+                .zip(info_logits.into_iter())
+                .zip(bases_logits.into_iter())
+                .for_each(|((wid, il), bl)| {
                     data.consensus_data.windows[wid as usize]
-                        .logits
-                        .replace(Vec::try_from(l).unwrap());
+                        .info_logits
+                        .replace(Vec::try_from(il).unwrap());
+
+                    data.consensus_data.windows[wid as usize]
+                        .bases_logits
+                        .replace(Vec::try_from(bl).unwrap());
                 });
         }
 
@@ -245,7 +259,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl IntoIterator<Item = (usize, Array3<u8>, Vec<usize>)>,
+    features: impl IntoIterator<Item = (usize, Array3<u8>, Vec<SupportedPos>)>,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
@@ -261,7 +275,8 @@ pub(crate) fn prepare_examples(
 
             let tidx = get_target_indices(&feats.index_axis(Axis(2), 0));
 
-            ConsensusWindow::new(n_alns, bases, quals, tidx, supported, None)
+            //TODO: Start here.
+            ConsensusWindow::new(n_alns, bases, quals, tidx, supported, None, None)
         })
         .collect();
 
@@ -305,16 +320,18 @@ fn consensus(
     read: &HAECRecord,
     window_size: usize,
     buffer: &mut Vec<u8>,
-) -> Option<Vec<u8>> {
+) -> Option<Vec<Vec<u8>>> {
     read.seq.get_sequence(buffer);
     let uncorrected = &buffer[..read.seq.len()];
+
+    let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
     let minmax = data
         .windows
         .iter()
         .enumerate()
-        .filter_map(|(idx, win)| if win.n_alns > 0 { Some(idx) } else { None })
+        .filter_map(|(idx, win)| if win.n_alns > 1 { Some(idx) } else { None })
         .minmax();
     let (wid_st, wid_en) = match minmax {
         NoElements => {
@@ -325,11 +342,16 @@ fn consensus(
     };
 
     for (wid, window) in (wid_st..wid_en).zip(data.windows[wid_st..wid_en].iter()) {
-        if window.n_alns < 6 {
+        /*if window.n_alns < 2 {
             let start = wid * window_size;
             let end = ((wid + 1) * window_size).min(uncorrected.len());
 
             corrected.extend(&uncorrected[start..end]);
+            continue;
+        }*/
+        if window.n_alns < 2 {
+            corrected_seqs.push(corrected);
+            corrected = Vec::new();
             continue;
         }
 
@@ -341,59 +363,90 @@ fn consensus(
             _ => window
                 .supported
                 .iter()
-                .zip(window.logits.as_ref().unwrap().iter())
-                .map(|(supp, l)| (*supp, *l))
+                .zip(window.info_logits.as_ref().unwrap().iter())
+                .zip(window.bases_logits.as_ref().unwrap().iter())
+                .map(|((supp, il), bl)| (*supp, (*il, *bl)))
                 .collect(),
         };
 
-        for tpos in 0..window.indices.len() {
-            if matches!(maybe_info.get(&tpos), Some(l) if *l > 0.) {
-                let base = BASES_UPPER[bases[[window.indices[tpos], 0]] as usize];
-                corrected.push(base);
+        let (mut pos, mut ins) = (-1i32, 0);
+        for col in bases.axis_iter(Axis(0)) {
+            if col[0] == BASES_MAP[b'*' as usize] {
+                ins += 1;
             } else {
-                // Correct bases
-                let start = window.indices[tpos];
-                let end = if tpos == window.indices.len() - 1 {
-                    bases.len_of(Axis(0))
-                } else {
-                    window.indices[tpos + 1]
+                pos += 1;
+                ins = 0;
+            }
+
+            if let Some((_, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
+                let base = match *b {
+                    0 => b'A',
+                    1 => b'C',
+                    2 => b'G',
+                    3 => b'T',
+                    4 => b'*',
+                    _ => panic!("Unrecognized base"),
                 };
 
-                for pos in start..end {
-                    let most_common =
-                        two_most_frequent(bases.slice(s![pos, ..]).iter().filter_map(|b| {
-                            if *b != BASES_MAP[b'.' as usize] {
-                                Some(BASES_UPPER[*b as usize])
-                            } else {
-                                None
-                            }
-                        }));
-                    let tbase = BASES_UPPER[bases[[pos, 0]] as usize];
-
-                    let base = if most_common.len() == 2
-                        && most_common[0].0 == most_common[1].0
-                        && (most_common[0].1 == tbase || most_common[1].1 == tbase)
-                    {
-                        tbase
+                /*println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    std::str::from_utf8(&read.id).unwrap(),
+                    wid,
+                    pos,
+                    ins,
+                    corrected_seqs.len(),
+                    corrected.len(),
+                    'S',
+                    base
+                ); */
+                if base != b'*' {
+                    corrected.push(base);
+                }
+            } else {
+                let most_common = two_most_frequent(col.iter().filter_map(|b| {
+                    if *b != BASES_MAP[b'.' as usize] {
+                        Some(BASES_UPPER[*b as usize])
                     } else {
-                        most_common[0].1
-                    };
-
-                    if base != b'*' {
-                        corrected.push(base);
+                        None
                     }
+                }));
+                let tbase = BASES_UPPER[col[0] as usize];
+
+                let base = if most_common.len() == 2
+                    && most_common[0].0 == most_common[1].0
+                    && (most_common[0].1 == tbase || most_common[1].1 == tbase)
+                {
+                    tbase
+                } else {
+                    most_common[0].1
+                };
+
+                /*println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    std::str::from_utf8(&read.id).unwrap(),
+                    wid,
+                    pos,
+                    ins,
+                    corrected_seqs.len(),
+                    corrected.len(),
+                    "N",
+                    base,
+                );*/
+                if base != b'*' {
+                    corrected.push(base);
                 }
             }
         }
     }
 
-    Some(corrected)
+    corrected_seqs.push(corrected);
+    Some(corrected_seqs)
 }
 
 pub(crate) fn consensus_worker(
     reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
-    sender: Sender<(usize, Vec<u8>)>,
+    sender: Sender<(usize, Vec<Vec<u8>>)>,
     window_size: u32,
 ) {
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
