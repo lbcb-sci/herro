@@ -18,7 +18,6 @@ use tch::{CModule, IValue, IndexOp, Tensor};
 use crate::{
     features::{get_target_indices, SupportedPos, TOP_K},
     haec_io::HAECRecord,
-    BATCH_SIZE,
 };
 
 const BASE_PADDING: u8 = 11;
@@ -260,6 +259,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 pub(crate) fn prepare_examples(
     rid: u32,
     features: impl IntoIterator<Item = (usize, Array3<u8>, Vec<SupportedPos>)>,
+    batch_size: usize,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
@@ -283,7 +283,7 @@ pub(crate) fn prepare_examples(
     let batches: Vec<_> = (0u32..)
         .zip(windows.iter())
         .filter(|(_, features)| features.supported.len() > 0)
-        .chunks(BATCH_SIZE)
+        .chunks(batch_size)
         .into_iter()
         .map(|v| {
             let batch = v.collect::<Vec<_>>();

@@ -714,15 +714,17 @@ pub(crate) struct InferenceOutput<'a> {
     rid: u32,
     rname: Option<&'a [u8]>,
     features: Vec<(usize, Array3<u8>, Vec<SupportedPos>)>,
+    batch_size: usize,
 }
 
 impl InferenceOutput<'_> {
-    pub(crate) fn new(sender: Sender<InferenceData>) -> Self {
+    pub(crate) fn new(sender: Sender<InferenceData>, batch_size: usize) -> Self {
         Self {
             sender,
             rid: u32::MAX,
             rname: None,
             features: Vec::new(),
+            batch_size: batch_size,
         }
     }
 }
@@ -748,7 +750,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
     }
 
     fn emit(&mut self) {
-        let data = prepare_examples(self.rid, self.features.drain(..));
+        let data = prepare_examples(self.rid, self.features.drain(..), self.batch_size);
         self.sender.send(data).unwrap();
     }
 }

@@ -36,7 +36,6 @@ mod windowing;
 
 pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
 const READS_BATCH_SIZE: usize = 100_000;
-pub(crate) const BATCH_SIZE: usize = 128;
 pub(crate) const LINE_ENDING: u8 = b'\n';
 
 pub enum AlnMode<V: AsRef<Path>> {
@@ -140,6 +139,7 @@ pub fn error_correction<T, U, V>(
     threads: usize,
     window_size: u32,
     devices: &[usize],
+    batch_size: usize,
     aln_mode: AlnMode<V>,
 ) where
     T: AsRef<Path>,
@@ -167,7 +167,7 @@ pub fn error_correction<T, U, V>(
 
     let sequences = Arc::new(ThreadLocal::new());
     let fo_tl = Arc::new(ThreadLocal::new());
-    let feats_output = InferenceOutput::new(feats_sender);
+    let feats_output = InferenceOutput::new(feats_sender, batch_size);
 
     thread::scope(|s| {
         // Create inference thread for every GPU

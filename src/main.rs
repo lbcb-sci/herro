@@ -86,6 +86,9 @@ struct InferenceArgs {
     )]
     devices: Vec<usize>,
 
+    #[arg(short = 'b', help = "Batch size per device.")]
+    batch_size: usize,
+
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
     reads: String,
 
@@ -128,6 +131,7 @@ fn main() {
                 args.feat_gen_threads,
                 args.window_size,
                 &args.devices,
+                args.batch_size,
                 mode,
             );
         }
