@@ -31,6 +31,7 @@ mod features;
 mod haec_io;
 mod inference;
 mod mm2;
+mod msa;
 mod overlaps;
 mod windowing;
 
