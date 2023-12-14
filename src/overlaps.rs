@@ -1,12 +1,18 @@
-use std::fmt::{self};
-use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    io::{BufRead, BufReader},
-    path::Path,
-};
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+use zstd::stream::AutoFinishEncoder;
 
-use crate::aligners::CigarOp;
+use std::fmt;
+
+use std::fs::File;
+use std::io::BufRead;
+use std::io::BufWriter;
+use std::io::Write;
+
+use crate::aligners::{cigar_to_string, CigarOp};
+use crate::haec_io::bytes_to_u32;
+use crate::haec_io::HAECRecord;
+use crate::LINE_ENDING;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
@@ -25,7 +31,7 @@ impl fmt::Display for Strand {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Overlap {
     pub qid: u32,
     pub qlen: u32,
@@ -36,8 +42,6 @@ pub struct Overlap {
     pub tlen: u32,
     pub tstart: u32,
     pub tend: u32,
-    pub cigar: Option<Vec<CigarOp>>,
-    pub accuracy: Option<f32>,
 }
 
 impl Overlap {
@@ -62,13 +66,7 @@ impl Overlap {
             tlen,
             tstart,
             tend,
-            cigar: None,
-            accuracy: None,
         }
-    }
-
-    fn target_overlap_length(&self) -> u32 {
-        return self.tend - self.tstart;
     }
 
     pub fn return_other_id(&self, id: u32) -> u32 {
@@ -77,6 +75,18 @@ impl Overlap {
         } else {
             return self.qid;
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct Alignment {
+    pub overlap: Overlap,
+    pub cigar: Vec<CigarOp>,
+}
+
+impl Alignment {
+    pub fn new(overlap: Overlap, cigar: Vec<CigarOp>) -> Self {
+        Alignment { overlap, cigar }
     }
 }
 
@@ -94,161 +104,118 @@ impl PartialEq for Overlap {
 
 impl Eq for Overlap {}
 
-const EXTEND_LENGTH: u32 = 500;
-const OL_THRESHOLD: u32 = 500;
-const DOUBLE_OL_THRESHOLD: u32 = 2 * OL_THRESHOLD;
+pub fn parse_paf(
+    mut reader: impl BufRead,
+    name_to_id: &HashMap<&[u8], u32>,
+    mut alns_writer: Option<&mut AutoFinishEncoder<BufWriter<File>>>,
+) -> Vec<Alignment> {
+    //let mut reader = BufReader::new(read);
 
-pub fn parse_paf<P: AsRef<Path>>(path: P, name_to_id: &HashMap<&str, u32>) -> Vec<Overlap> {
-    let file = File::open(path).expect("Cannot open overlap file.");
-    let reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    let mut processed = HashSet::default();
 
-    let mut overlaps = Vec::new();
-    let mut ratio_removed = 0u32;
-    let mut processed = HashSet::new();
-    for line in reader.lines() {
-        let line = line.unwrap();
+    let mut alignments = Vec::new();
+    while let Ok(len) = reader.read_until(LINE_ENDING, &mut buffer) {
+        if len == 0 {
+            break;
+        }
 
-        let mut data = line.split("\t");
+        let mut data = buffer[..len - 1].split(|&c| c == b'\t');
 
         let qid = match name_to_id.get(data.next().unwrap()) {
             Some(qid) => *qid,
-            None => continue,
+            None => {
+                buffer.clear();
+                continue;
+            }
         };
-        let qlen: u32 = data.next().unwrap().parse().unwrap();
-        let qstart: u32 = data.next().unwrap().parse().unwrap();
-        let qend: u32 = data.next().unwrap().parse().unwrap();
+        let qlen = bytes_to_u32(data.next().unwrap());
+        let qstart = bytes_to_u32(data.next().unwrap());
+        let qend = bytes_to_u32(data.next().unwrap());
 
-        let strand = match data.next().unwrap() {
-            "+" => Strand::Forward,
-            "-" => Strand::Reverse,
+        let strand = match data.next().unwrap()[0] {
+            b'+' => Strand::Forward,
+            b'-' => Strand::Reverse,
             _ => panic!("Invalid strand character."),
         };
 
         let tid = match name_to_id.get(data.next().unwrap()) {
             Some(tid) => *tid,
-            None => continue,
+            None => {
+                buffer.clear();
+                continue;
+            }
         };
-        let tlen: u32 = data.next().unwrap().parse().unwrap();
-        let tstart: u32 = data.next().unwrap().parse().unwrap();
-        let tend: u32 = data.next().unwrap().parse().unwrap();
+        let tlen: u32 = bytes_to_u32(data.next().unwrap());
+        let tstart: u32 = bytes_to_u32(data.next().unwrap());
+        let tend: u32 = bytes_to_u32(data.next().unwrap());
+
+        let cigar = data.last().unwrap();
+        let cigar = parse_cigar(&cigar[5..]);
 
         if tid == qid {
             // Cannot have self-overlaps
+            buffer.clear();
             continue;
         }
 
         if processed.contains(&(qid, tid)) {
-            continue; // We assume the first one is the best one
+            buffer.clear();
+            continue; // We assume the first overlap between two reads is the best one
         }
         processed.insert((qid, tid));
 
-        let ratio = (tend - tstart) as f64 / (qend - qstart) as f64;
-        if ratio < 0.9 || ratio > 1.111 {
-            // Filter based on length ratio
-            ratio_removed += 1;
-            continue;
+        let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
+        let alignment = Alignment::new(overlap, cigar);
+        alignments.push(alignment);
+
+        if let Some(ref mut aw) = alns_writer {
+            aw.write_all(&buffer[..len]).unwrap();
         }
 
-        let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
-        overlaps.push(overlap);
+        buffer.clear();
     }
 
-    eprintln!("Removed overlaps due to ratio {}", ratio_removed);
-    eprintln!("Total overlaps {}", overlaps.len());
-    overlaps
+    alignments
 }
 
-fn find_primary_overlaps(overlaps: &[Overlap]) -> HashSet<usize> {
-    let mut ovlps_for_pairs = HashMap::new();
-    for i in 0..overlaps.len() {
-        ovlps_for_pairs
-            .entry((overlaps[i].qid, overlaps[i].tid))
-            .or_insert_with(|| Vec::new())
-            .push(i);
+#[allow(dead_code)]
+pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
+    for aln in alignments {
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            std::str::from_utf8(&reads[aln.overlap.qid as usize].id).unwrap(),
+            aln.overlap.qlen,
+            aln.overlap.qstart,
+            aln.overlap.qend,
+            aln.overlap.strand,
+            std::str::from_utf8(&reads[aln.overlap.tid as usize].id).unwrap(),
+            aln.overlap.tlen,
+            aln.overlap.tstart,
+            aln.overlap.tend,
+            cigar_to_string(&aln.cigar),
+        )
     }
-
-    let mut kept_overlap_ids = HashSet::new();
-    for ((_, _), ovlps) in ovlps_for_pairs {
-        let kept_id = match ovlps.len() {
-            1 => ovlps[0],
-            _ => ovlps
-                .into_iter()
-                .max_by_key(|id| overlaps[*id].target_overlap_length())
-                .unwrap(),
-        };
-
-        kept_overlap_ids.insert(kept_id);
-    }
-
-    kept_overlap_ids
 }
 
-fn extend_overlap(overlap: &mut Overlap) {
-    overlap.qstart = overlap.qstart.checked_sub(EXTEND_LENGTH).unwrap_or(0);
-    overlap.qend = overlap.qlen.min(overlap.qend + EXTEND_LENGTH); // Should not overflow
+fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
+    let mut ops = Vec::new();
 
-    overlap.tstart = overlap.tstart.checked_sub(EXTEND_LENGTH).unwrap_or(0);
-    overlap.tend = overlap.tlen.min(overlap.tend + EXTEND_LENGTH);
-}
+    let mut l = 0;
+    for &c in cigar {
+        if c.is_ascii_digit() {
+            l = l * 10 + (c - b'0') as u32;
+        } else {
+            match c {
+                b'M' => ops.push(CigarOp::Match(l)),
+                b'I' => ops.push(CigarOp::Insertion(l)),
+                b'D' => ops.push(CigarOp::Deletion(l)),
+                _ => panic!("Invalid CIGAR character."),
+            }
 
-fn is_valid_overlap(overlap: &Overlap) -> bool {
-    // Query contained in target
-    if (overlap.qlen - (overlap.qend - overlap.qstart)) <= OL_THRESHOLD {
-        return true;
+            l = 0;
+        }
     }
 
-    // Target contained in query
-    if (overlap.tlen - (overlap.tend - overlap.tstart)) <= OL_THRESHOLD {
-        return true;
-    }
-
-    let (qstart, qend) = match overlap.strand {
-        Strand::Forward => (overlap.qstart, overlap.qend),
-        Strand::Reverse => (overlap.qlen - overlap.qend, overlap.qlen - overlap.qstart),
-    };
-
-    // Prefix overlap between query and target
-    if qstart > OL_THRESHOLD
-        && overlap.tstart <= OL_THRESHOLD
-        && (overlap.qlen - qend) <= OL_THRESHOLD
-    {
-        return true;
-    }
-
-    // Suffix overlap between query and target
-    if overlap.tstart > OL_THRESHOLD
-        && qstart <= OL_THRESHOLD
-        && (overlap.tlen - overlap.tend) <= OL_THRESHOLD
-    {
-        return true;
-    }
-
-    false
-}
-
-pub fn process_overlaps(overlaps: Vec<Overlap>) -> Vec<Overlap> {
-    //let primary_overlaps = find_primary_overlaps(&overlaps);
-    //println!("Number of primary overlaps {}", primary_overlaps.len());
-
-    /*overlaps
-    .into_iter()
-    .enumerate()
-    //.filter(|(i, _)| primary_overlaps.contains(i)) // Keep only primary overlaps
-    .map(|(_, o)| {
-        //extend_overlap(&mut o);
-        o
-    })
-    .filter(|o| {
-        let b = is_valid_overlap(o);
-        b
-    })
-    .collect()*/
-
-    overlaps
-        .into_iter()
-        .filter(|o| {
-            let b = is_valid_overlap(o);
-            b
-        })
-        .collect()
+    ops
 }
