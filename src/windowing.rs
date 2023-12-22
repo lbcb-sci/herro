@@ -7,6 +7,7 @@ pub struct OverlapWindow {
     pub overlap: Rc<Overlap>,
     pub tstart: u32,
     pub qstart: u32,
+    pub qend: u32,
     pub cigar_start_idx: usize,
     pub cigar_start_offset: u32,
     pub cigar_end_idx: usize,
@@ -18,6 +19,7 @@ impl OverlapWindow {
         overlap: Rc<Overlap>,
         tstart: u32,
         qstart: u32,
+        qend: u32,
         cigar_start_idx: usize,
         cigar_start_offset: u32,
         cigar_end_idx: usize,
@@ -27,6 +29,7 @@ impl OverlapWindow {
             overlap,
             tstart,
             qstart,
+            qend,
             cigar_start_idx,
             cigar_start_offset,
             cigar_end_idx,
@@ -146,12 +149,19 @@ pub(crate) fn extract_windows(
         for i in 1..diff_w {
             let offset = (current_w + i) * window_size - tpos;
 
+            let q_start_new = if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op {
+                qpos + offset
+            } else {
+                qpos
+            };
+
             // If there was full window -> emit it, else label start
             if cigar_start_idx.is_some() {
                 windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
                     Rc::clone(&overlap),
                     t_window_start.unwrap(),
                     q_window_start.unwrap(),
+                    q_start_new,
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
                     cigar_idx,
@@ -213,6 +223,7 @@ pub(crate) fn extract_windows(
                 Rc::clone(&overlap),
                 t_window_start.unwrap(),
                 q_window_start.unwrap(),
+                qend,
                 cigar_start_idx.unwrap(),
                 cigar_start_offset.unwrap(),
                 cigar_end_idx,
@@ -240,6 +251,7 @@ pub(crate) fn extract_windows(
             Rc::clone(&overlap),
             t_window_start.unwrap(),
             q_window_start.unwrap(),
+            qpos,
             cigar_start_idx.unwrap(),
             cigar_start_offset.unwrap(),
             cigar.len(),

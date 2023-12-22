@@ -1,18 +1,24 @@
+use glob::glob;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use zstd::stream::AutoFinishEncoder;
+use zstd::Encoder;
 
 use std::fmt;
 
+use std::fs::create_dir_all;
 use std::fs::File;
-use std::io::BufRead;
+use std::io::prelude::*;
+use std::io::BufReader;
 use std::io::BufWriter;
-use std::io::Write;
+use std::path::Path;
 
 use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::bytes_to_u32;
 use crate::haec_io::HAECRecord;
+use crate::mm2;
 use crate::LINE_ENDING;
+use crate::READS_BATCH_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
@@ -218,4 +224,89 @@ fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     }
 
     ops
+}
+
+pub(crate) fn generate_batches<'a, P, T>(
+    reads: &'a [HAECRecord],
+    name_to_id: &'a HashMap<&[u8], u32>,
+    reads_path: P,
+    threads: usize,
+    alns_path: Option<T>,
+) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
+    T: AsRef<Path> + 'a,
+{
+    if let Some(ref ap) = alns_path {
+        create_dir_all(ap).unwrap();
+    }
+
+    reads
+        .chunks(READS_BATCH_SIZE)
+        .enumerate()
+        .map(move |(batch_idx, batch)| {
+            let mm2_out = BufReader::new(mm2::call_mm2(batch, &reads_path, threads));
+
+            let tids: HashSet<_> = batch
+                .iter()
+                .map(|r| *name_to_id.get(&*r.id).unwrap())
+                .collect();
+
+            let mut writer = alns_path.as_ref().map(|ap| {
+                let batch_path = ap.as_ref().join(format!("{batch_idx}.oec.zst"));
+                let file = File::create(batch_path).unwrap();
+                let mut w = Encoder::new(BufWriter::new(file), 0).unwrap().auto_finish();
+
+                // Write header
+                writeln!(&mut w, "{}", batch.len()).unwrap();
+                batch.iter().for_each(|r| {
+                    writeln!(&mut w, "{}", std::str::from_utf8(&r.id).unwrap()).unwrap()
+                });
+
+                w
+            });
+
+            let alignments = parse_paf(mm2_out, &name_to_id, writer.as_mut());
+
+            (tids, alignments)
+        })
+}
+
+pub(crate) fn read_batches<'a, P>(
+    name_to_id: &'a HashMap<&[u8], u32>,
+    batches: P,
+) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
+{
+    let g = batches.as_ref().join("*.oec.zst");
+    glob(g.to_str().unwrap()).unwrap().map(|p| {
+        let mut reader = {
+            let file = File::open(p.unwrap()).unwrap();
+            let reader = zstd::Decoder::new(file).unwrap();
+            BufReader::new(reader)
+        };
+
+        // Read number of target reads
+        let mut buf = Vec::new();
+        let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+        let n_targets = buf[..len - 1]
+            .iter()
+            .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
+
+        let tids: HashSet<_> = (0..n_targets)
+            .map(|_| {
+                buf.clear();
+                let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+
+                *name_to_id.get(&buf[..len - 1]).unwrap()
+            })
+            .collect();
+
+        let alignments = parse_paf(&mut reader, name_to_id, None);
+
+        (tids, alignments)
+    })
 }

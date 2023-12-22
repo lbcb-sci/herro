@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::{error_correction, generate_features, AlnMode};
+use ont_haec_rs::{error_correction, AlnMode};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -108,13 +108,13 @@ fn main() {
                 _ => unreachable!(),
             };
 
-            generate_features(
+            /*generate_features(
                 args.reads,
                 args.output,
                 args.feat_gen_threads,
                 args.window_size,
                 mode,
-            );
+            );*/
         }
         Commands::Inference(args) => {
             let mode = match (args.alns.read_alns, args.alns.write_alns) {
@@ -130,7 +130,7 @@ fn main() {
                 args.output,
                 args.feat_gen_threads,
                 args.window_size,
-                &args.devices,
+                args.devices,
                 args.batch_size,
                 mode,
             );
