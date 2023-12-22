@@ -93,8 +93,8 @@ fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
     };
 
     match window.overlap.strand {
-        Strand::Forward => (qstart + window.qstart, qend),
-        Strand::Reverse => (qstart, qend - window.qstart),
+        Strand::Forward => (qstart + window.qstart, qstart + window.qend),
+        Strand::Reverse => (qend - window.qend, qend - window.qstart),
     }
 }
 
@@ -118,8 +118,8 @@ fn get_features_for_ol_window(
     let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> =
         match window.overlap.strand {
             Strand::Forward => {
-                let range = (qstart + window.qstart) as usize..qend as usize;
-                let qlen = qend as usize - (qstart + window.qstart) as usize;
+                let range = (qstart + window.qstart) as usize..(qstart + window.qend) as usize;
+                let qlen = (window.qend - window.qstart) as usize;
 
                 query.seq.get_subseq(range.clone(), qbuffer);
                 let quals = &query.qual[range];
@@ -127,8 +127,8 @@ fn get_features_for_ol_window(
                 Box::new(qbuffer[..qlen].iter().zip(quals))
             }
             Strand::Reverse => {
-                let range = qstart as usize..(qend - window.qstart) as usize;
-                let qlen = (qend - window.qstart) as usize - qstart as usize;
+                let range = (qend - window.qend) as usize..(qend - window.qstart) as usize;
+                let qlen = (window.qend - window.qstart) as usize;
 
                 query.seq.get_rc_subseq(range.clone(), qbuffer);
                 let quals = &query.qual[range];
@@ -324,7 +324,7 @@ fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
 pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     rid: u32,
     reads: &'a [HAECRecord],
-    overlaps: &[&Alignment],
+    overlaps: Vec<Alignment>,
     window_size: u32,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
     feats_output: &mut T,
