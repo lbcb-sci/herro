@@ -1,4 +1,4 @@
-use std::{path::Path, time::Instant};
+use std::path::Path;
 
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
@@ -158,8 +158,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     model_path: P,
     device: tch::Device,
     input_channel: Receiver<InferenceData>,
-    //output_channel: Sender<ConsensusData>,
-    output_channel: Sender<()>,
+    output_channel: Sender<ConsensusData>,
 ) {
     let _no_grad = tch::no_grad_guard();
 
@@ -171,9 +170,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
             Ok(data) => data,
             Err(_) => break,
         };
-
-        output_channel.send(());
-        continue;
 
         for batch in data.batches {
             let (wids, info_logits, bases_logits) = inference(batch, &model, device);
@@ -198,7 +194,7 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
             output_channel.len()
         );*/
 
-        //output_channel.send(data.consensus_data).unwrap();
+        output_channel.send(data.consensus_data).unwrap();
     }
 }
 

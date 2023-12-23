@@ -146,6 +146,9 @@ pub fn error_correction<T, U, V>(
     U: AsRef<Path> + Send + Sync,
     V: AsRef<Path> + Send,
 {
+    tch::set_num_threads(1);
+    tch::set_num_interop_threads(1);
+
     // Get fastq reads
     let reads = haec_io::get_reads(&reads_path, window_size);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
@@ -157,7 +160,7 @@ pub fn error_correction<T, U, V>(
     let pbar = ProgressBar::new(reads.len() as u64);
     thread::scope(|s| {
         s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender));
-        s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender.clone()));
+        s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
             let (infer_sender, infer_recv) = bounded(10_000);
@@ -192,13 +195,12 @@ pub fn error_correction<T, U, V>(
                 });
             }
 
-            let pbar_s = pbar_sender.clone();
             s.spawn(move || {
                 inference_worker(
                     model_path,
                     tch::Device::Cuda(device),
                     infer_recv,
-                    pbar_s.clone(),
+                    cons_sender,
                 )
             });
             s.spawn(|| consensus_worker(&reads, cons_recv, writer_s, window_size));
@@ -212,11 +214,8 @@ pub fn error_correction<T, U, V>(
         loop {
             match pbar_receiver.recv() {
                 Ok(_) => pbar.inc(1),
-                //Ok(_) => continue,
                 Err(_) => break,
             }
-
-            //println!("Pbar receiver: {}", pbar_receiver.len());
         }
 
         drop(pbar_receiver);

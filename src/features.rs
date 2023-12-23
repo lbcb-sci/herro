@@ -5,6 +5,7 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 use std::rc::Rc;
+use std::time::Instant;
 
 use crossbeam_channel::Sender;
 
