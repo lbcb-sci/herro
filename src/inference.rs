@@ -4,7 +4,7 @@ use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 
 use lazy_static::lazy_static;
-use ndarray::{Array3, Axis};
+use ndarray::{Array2, Array3, Axis};
 
 use tch::{CModule, IValue, IndexOp, Tensor};
 
@@ -160,6 +160,17 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     input_channel: Receiver<InferenceData>,
     output_channel: Sender<ConsensusData>,
 ) {
+    /*eprintln!(
+        "Number of inter-op threads: {}",
+        tch::get_num_interop_threads()
+    );
+    eprintln!("Number of intra-op threads: {}", tch::get_num_threads());*/
+
+    let d = match device {
+        tch::Device::Cuda(d) => d,
+        _ => unreachable!(),
+    };
+
     let _no_grad = tch::no_grad_guard();
 
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
@@ -200,22 +211,22 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl IntoIterator<Item = (usize, Array3<u8>, Vec<SupportedPos>)>,
+    features: impl IntoIterator<Item = (usize, (Array2<u8>, Array2<u8>), Vec<SupportedPos>)>,
     batch_size: usize,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(n_alns, ref mut feats, supported)| {
-            // Transpose: [R, L, 2] -> [L, R, 2]
-            feats.swap_axes(1, 0);
-
+        .map(|(n_alns, (mut bases, mut quals), supported)| {
             // Transform bases (encode) and quals (normalize)
-            let bases = feats.index_axis(Axis(2), 0).mapv(|b| BASES_MAP[b as usize]);
-            let quals = feats
-                .index_axis(Axis(2), 1)
+            bases.mapv_inplace(|b| BASES_MAP[b as usize]);
+            let mut quals = quals
                 .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
-            let tidx = get_target_indices(&feats.index_axis(Axis(2), 0));
+            // Transpose: [R, L] -> [L, R]
+            bases.swap_axes(1, 0);
+            quals.swap_axes(1, 0);
+
+            let tidx = get_target_indices(&bases);
 
             //TODO: Start here.
             ConsensusWindow::new(n_alns, bases, quals, tidx, supported, None, None)

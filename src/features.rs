@@ -10,7 +10,7 @@ use std::time::Instant;
 use crossbeam_channel::Sender;
 
 use lazy_static::lazy_static;
-use ndarray::{s, Array, Array3, ArrayBase, ArrayViewMut2, Axis, Data, Ix2};
+use ndarray::{s, Array, Array2, Array3, ArrayBase, ArrayViewMut1, ArrayViewMut2, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 
 use crate::aligners::{fix_cigar, get_proper_cigar, CigarOp};
@@ -100,7 +100,8 @@ fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
 }
 
 fn get_features_for_ol_window(
-    mut features: ArrayViewMut2<'_, u8>,
+    mut bases: ArrayViewMut1<'_, u8>,
+    mut quals: ArrayViewMut1<'_, u8>,
     window: &OverlapWindow,
     cigar: &[CigarOp],
     query: &HAECRecord,
@@ -159,14 +160,14 @@ fn get_features_for_ol_window(
     } else {
         b'#'
     };
-    features.column_mut(0).fill(gap); // Initialize with gap token
+    bases.fill(gap); // Initialize with gap token
 
     let mut tpos = offset; // position in the target read (excluding insertions)
     let mut idx = offset + max_ins[..offset].iter().map(|v| *v as usize).sum::<usize>(); // position in the features (including insertions)
 
     if idx > 0 {
         // No alignment at the start
-        features.slice_mut(s![..idx, 0]).fill(b'.');
+        bases.slice_mut(s![..idx]).fill(b'.');
     }
 
     cigar
@@ -196,8 +197,8 @@ fn get_features_for_ol_window(
                         let (base, qual) = query_iter
                             .next()
                             .expect("Base and its quality should be present.");
-                        features[[idx, 0]] = *base;
-                        features[[idx, 1]] = *qual;
+                        bases[idx] = *base;
+                        quals[idx] = *qual;
 
                         idx += 1 + max_ins[tpos + i] as usize;
                     }
@@ -224,17 +225,17 @@ fn get_features_for_ol_window(
                             .next()
                             .expect("Base and its quality should be present.");
 
-                        features[[idx + i, 0]] = *base;
-                        features[[idx + i, 1]] = *qual;
+                        bases[idx + i] = *base;
+                        quals[idx + i] = *qual;
                     }
                     idx += max_ins[tpos - 1] as usize; // Move back to the last base
                 }
             }
         });
 
-    if idx < features.shape()[0] {
+    if idx < bases.shape()[0] {
         // No alignment at the end
-        features.slice_mut(s![idx.., 0]).fill(b'.');
+        bases.slice_mut(s![idx..]).fill(b'.');
     }
 }
 
@@ -242,11 +243,12 @@ fn write_target_for_window(
     tstart: usize,
     target: &HAECRecord,
     max_ins: &[u16],
-    mut features: ArrayViewMut2<'_, u8>,
+    mut bases: ArrayViewMut1<'_, u8>,
+    mut quals: ArrayViewMut1<'_, u8>,
     window_length: usize,
     tbuffer: &mut [u8],
 ) {
-    features.column_mut(0).fill(b'*'); // Fill like forward
+    bases.fill(b'*'); // Fill like forward
 
     let tlen = tstart + window_length - tstart;
     target
@@ -259,8 +261,8 @@ fn write_target_for_window(
         .zip(target.qual[tstart..tstart + window_length].iter())
         .enumerate()
         .for_each(|(i, (b, q))| {
-            features[[tpos, 0]] = *b;
-            features[[tpos, 1]] = *q;
+            bases[tpos] = *b;
+            quals[tpos] = *q;
 
             tpos += 1 + max_ins[i] as usize;
         });
@@ -276,19 +278,20 @@ fn get_features_for_window(
     window_length: usize, // Full window length
     tbuffer: &mut [u8],
     qbuffer: &mut [u8],
-) -> Array3<u8> {
+) -> (Array2<u8>, Array2<u8>) {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
-    let mut features = Array::zeros((1 + TOP_K, length, 2));
-    features.index_axis_mut(Axis(2), 0).fill(b'.'); // Set '.' as marker for empty row
-    features.index_axis_mut(Axis(2), 1).fill(b'!'); // Set default quality to 0
+
+    let mut bases = Array::from_elem((1 + TOP_K, length), b'.');
+    let mut quals = Array::from_elem((1 + TOP_K, length), b'!');
 
     // First write the target
     write_target_for_window(
         tstart,
         &reads[tid as usize],
         &max_ins,
-        features.index_axis_mut(Axis(0), 0),
+        bases.index_axis_mut(Axis(0), 0),
+        quals.index_axis_mut(Axis(0), 0),
         window_length,
         tbuffer,
     );
@@ -297,7 +300,8 @@ fn get_features_for_window(
     overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
         let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
-            features.index_axis_mut(Axis(0), i + 1),
+            bases.index_axis_mut(Axis(0), i + 1),
+            quals.index_axis_mut(Axis(0), i + 1),
             ow,
             ovlps_cigar_map.get(&qid).unwrap(),
             &reads[qid as usize],
@@ -308,7 +312,7 @@ fn get_features_for_window(
         )
     });
 
-    features
+    (bases, quals)
 }
 
 fn overlap_window_filter(cigar: &[CigarOp]) -> bool {
@@ -443,7 +447,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             win_len,
         );
 
-        let window = get_features_for_window(
+        let (bases, quals) = get_features_for_window(
             &mut windows[i],
             &ovlps_cigar_map,
             rid,
@@ -462,9 +466,9 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             })
             .collect();
 
-        let supported = get_supported(&window.index_axis(Axis(2), 0));
+        let supported = get_supported(&bases);
 
-        feats_output.update(window, supported, qids, i as u16);
+        feats_output.update(bases, quals, supported, qids, i as u16);
     }
 
     feats_output.emit();
@@ -650,7 +654,8 @@ pub(crate) trait FeaturesOutput<'a> {
         'b: 'a;
     fn update(
         &mut self,
-        features: Array3<u8>,
+        bases: Array2<u8>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         wid: u16,
@@ -692,7 +697,8 @@ where
 
     fn update(
         &mut self,
-        features: Array3<u8>,
+        bases: Array2<u8>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         wid: u16,
@@ -701,7 +707,7 @@ where
         let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(&output_path, wid, &ids, &features, supported.into_iter());
+        //output_features(&output_path, wid, &ids, &bases, supported.into_iter());
     }
 
     fn emit(&mut self) {
@@ -714,7 +720,7 @@ pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InferenceData>,
     rid: u32,
     rname: Option<&'a [u8]>,
-    features: Vec<(usize, Array3<u8>, Vec<SupportedPos>)>,
+    features: Vec<(usize, (Array2<u8>, Array2<u8>), Vec<SupportedPos>)>,
     batch_size: usize,
 }
 
@@ -742,12 +748,13 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
 
     fn update(
         &mut self,
-        features: Array3<u8>,
+        bases: Array2<u8>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         _wid: u16,
     ) {
-        self.features.push((ids.len(), features, supported));
+        self.features.push((ids.len(), (bases, quals), supported));
     }
 
     fn emit(&mut self) {
