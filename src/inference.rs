@@ -4,7 +4,7 @@ use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 
 use lazy_static::lazy_static;
-use ndarray::{Array2, Array3, Axis};
+use ndarray::{Array2, Axis};
 
 use tch::{CModule, IValue, IndexOp, Tensor};
 
@@ -214,16 +214,17 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 
 pub(crate) fn prepare_examples(
     rid: u32,
-    features: impl IntoIterator<Item = (usize, (Array2<u8>, Array2<u8>), Vec<SupportedPos>)>,
+    features: impl IntoIterator<Item = (usize, (Array2<u8>, Array2<f32>), Vec<SupportedPos>)>,
     batch_size: usize,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(n_alns, (mut bases, quals), supported)| {
+        .map(|(n_alns, (mut bases, mut quals), supported)| {
             // Transform bases (encode) and quals (normalize)
             bases.mapv_inplace(|b| BASES_MAP[b as usize]);
-            let quals = quals
-                .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
+            quals.mapv_inplace(|q| {
+                2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.
+            });
 
             // Transpose: [R, L] -> [L, R]
             //bases.swap_axes(1, 0);

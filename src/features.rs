@@ -101,7 +101,7 @@ fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
 
 fn get_features_for_ol_window(
     mut bases: ArrayViewMut1<'_, u8>,
-    mut quals: ArrayViewMut1<'_, u8>,
+    mut quals: ArrayViewMut1<'_, f32>,
     window: &OverlapWindow,
     cigar: &[CigarOp],
     query: &HAECRecord,
@@ -198,7 +198,7 @@ fn get_features_for_ol_window(
                             .next()
                             .expect("Base and its quality should be present.");
                         bases[idx] = *base;
-                        quals[idx] = *qual;
+                        quals[idx] = *qual as f32;
 
                         idx += 1 + max_ins[tpos + i] as usize;
                     }
@@ -226,7 +226,7 @@ fn get_features_for_ol_window(
                             .expect("Base and its quality should be present.");
 
                         bases[idx + i] = *base;
-                        quals[idx + i] = *qual;
+                        quals[idx + i] = *qual as f32;
                     }
                     idx += max_ins[tpos - 1] as usize; // Move back to the last base
                 }
@@ -244,7 +244,7 @@ fn write_target_for_window(
     target: &HAECRecord,
     max_ins: &[u16],
     mut bases: ArrayViewMut1<'_, u8>,
-    mut quals: ArrayViewMut1<'_, u8>,
+    mut quals: ArrayViewMut1<'_, f32>,
     window_length: usize,
     tbuffer: &mut [u8],
 ) {
@@ -262,7 +262,7 @@ fn write_target_for_window(
         .enumerate()
         .for_each(|(i, (b, q))| {
             bases[tpos] = *b;
-            quals[tpos] = *q;
+            quals[tpos] = *q as f32;
 
             tpos += 1 + max_ins[i] as usize;
         });
@@ -278,12 +278,12 @@ fn get_features_for_window(
     window_length: usize, // Full window length
     tbuffer: &mut [u8],
     qbuffer: &mut [u8],
-) -> (Array2<u8>, Array2<u8>) {
+) -> (Array2<u8>, Array2<f32>) {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
     let mut bases = Array::from_elem((length, 1 + TOP_K), b'.');
-    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!');
+    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!' as f32);
 
     // First write the target
     write_target_for_window(
@@ -655,7 +655,7 @@ pub(crate) trait FeaturesOutput<'a> {
     fn update(
         &mut self,
         bases: Array2<u8>,
-        quals: Array2<u8>,
+        quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         wid: u16,
@@ -698,7 +698,7 @@ where
     fn update(
         &mut self,
         bases: Array2<u8>,
-        quals: Array2<u8>,
+        quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         wid: u16,
@@ -720,7 +720,7 @@ pub(crate) struct InferenceOutput<'a> {
     sender: Sender<InferenceData>,
     rid: u32,
     rname: Option<&'a [u8]>,
-    features: Vec<(usize, (Array2<u8>, Array2<u8>), Vec<SupportedPos>)>,
+    features: Vec<(usize, (Array2<u8>, Array2<f32>), Vec<SupportedPos>)>,
     batch_size: usize,
 }
 
@@ -749,7 +749,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
     fn update(
         &mut self,
         bases: Array2<u8>,
-        quals: Array2<u8>,
+        quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         _wid: u16,
