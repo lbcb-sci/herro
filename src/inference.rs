@@ -104,6 +104,9 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         wids.push(*wid);
         let l = f.bases.len_of(Axis(0));
 
+        //println!("Bases shape: {:?}", f.bases.shape());
+        //println!("Quals shape: {:?}", f.quals.shape());
+
         bases
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.bases).unwrap());
@@ -216,15 +219,15 @@ pub(crate) fn prepare_examples(
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(n_alns, (mut bases, mut quals), supported)| {
+        .map(|(n_alns, (mut bases, quals), supported)| {
             // Transform bases (encode) and quals (normalize)
             bases.mapv_inplace(|b| BASES_MAP[b as usize]);
-            let mut quals = quals
+            let quals = quals
                 .mapv(|q| 2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
             // Transpose: [R, L] -> [L, R]
-            bases.swap_axes(1, 0);
-            quals.swap_axes(1, 0);
+            //bases.swap_axes(1, 0);
+            //quals.swap_axes(1, 0);
 
             let tidx = get_target_indices(&bases);
 

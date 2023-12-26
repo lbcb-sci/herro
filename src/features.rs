@@ -282,16 +282,16 @@ fn get_features_for_window(
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
-    let mut bases = Array::from_elem((1 + TOP_K, length), b'.');
-    let mut quals = Array::from_elem((1 + TOP_K, length), b'!');
+    let mut bases = Array::from_elem((length, 1 + TOP_K), b'.');
+    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!');
 
     // First write the target
     write_target_for_window(
         tstart,
         &reads[tid as usize],
         &max_ins,
-        bases.index_axis_mut(Axis(0), 0),
-        quals.index_axis_mut(Axis(0), 0),
+        bases.index_axis_mut(Axis(1), 0),
+        quals.index_axis_mut(Axis(1), 0),
         window_length,
         tbuffer,
     );
@@ -300,8 +300,8 @@ fn get_features_for_window(
     overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
         let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
-            bases.index_axis_mut(Axis(0), i + 1),
-            quals.index_axis_mut(Axis(0), i + 1),
+            bases.index_axis_mut(Axis(1), i + 1),
+            quals.index_axis_mut(Axis(1), i + 1),
             ow,
             ovlps_cigar_map.get(&qid).unwrap(),
             &reads[qid as usize],
@@ -548,7 +548,7 @@ where
     let mut supporeted = Vec::new();
 
     let (mut tpos, mut ins) = (-1i16, 0);
-    for col in bases.axis_iter(Axis(1)) {
+    for col in bases.axis_iter(Axis(0)) {
         if col[0] == b'*' {
             ins += 1;
         } else {
