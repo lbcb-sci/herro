@@ -104,15 +104,27 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         wids.push(*wid);
         let l = f.bases.len_of(Axis(0));
 
+        for p in 0..l {
+            for r in 0..f.bases.len_of(Axis(1)) {
+                let _ = bases
+                    .i((idx as i64, p as i64, r as i64))
+                    .fill_(f.bases[[p, r]] as i64);
+
+                let _ = quals
+                    .i((idx as i64, p as i64, r as i64))
+                    .fill_(f.quals[[p, r]] as f64);
+            }
+        }
+
         //println!("Bases shape: {:?}", f.bases.shape());
         //println!("Quals shape: {:?}", f.quals.shape());
 
-        bases
+        /*bases
             .i((idx as i64, ..l as i64, ..))
             .copy_(&Tensor::try_from(&f.bases).unwrap());
         quals
             .i((idx as i64, ..l as i64, ..))
-            .copy_(&Tensor::try_from(&f.quals).unwrap());
+            .copy_(&Tensor::try_from(&f.quals).unwrap());*/
 
         lens.push(f.supported.len() as i32);
 
@@ -163,12 +175,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     input_channel: Receiver<InferenceData>,
     output_channel: Sender<ConsensusData>,
 ) {
-    /*eprintln!(
-        "Number of inter-op threads: {}",
-        tch::get_num_interop_threads()
-    );
-    eprintln!("Number of intra-op threads: {}", tch::get_num_threads());*/
-
     let d = match device {
         tch::Device::Cuda(d) => d,
         _ => unreachable!(),

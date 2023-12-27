@@ -148,6 +148,7 @@ pub fn error_correction<T, U, V>(
 {
     tch::set_num_threads(1);
     //tch::set_num_interop_threads(1);
+    //tch::maybe_init_cuda();
 
     // Get fastq reads
     let reads = haec_io::get_reads(&reads_path, window_size);
