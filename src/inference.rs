@@ -154,13 +154,13 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         indices.push(Tensor::try_from(tidx).unwrap());
     }
 
-    if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
+    /*if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
         && batch[0].1.supported.contains(&SupportedPos::new(1157, 0))
     {
         bases.save("bases_to_test.tmp2.pt").unwrap();
         quals.save("quals_to_test.tmp2.pt").unwrap();
         indices[0].save("indices_to_test.tmp2.pt").unwrap();
-    }
+    }*/
 
     InferenceBatch::new(wids, bases, quals, Tensor::try_from(lens).unwrap(), indices)
 }

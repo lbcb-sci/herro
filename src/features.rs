@@ -12,7 +12,7 @@ use lazy_static::lazy_static;
 use ndarray::{s, Array, Array2, ArrayBase, ArrayViewMut1, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 
-use crate::aligners::{fix_cigar, get_proper_cigar, CigarOp};
+use crate::aligners::CigarOp;
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData};
 use crate::overlaps::{self, Alignment, Strand};
@@ -47,7 +47,7 @@ lazy_static! {
 
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
-    ovlps_cigar_map: &HashMap<u32, Vec<CigarOp>>,
+    ovlps_cigar_map: &HashMap<u32, &Vec<CigarOp>>,
     tid: u32,
     tstart: usize,
     window_length: usize,
@@ -245,17 +245,17 @@ fn write_target_for_window(
     mut bases: ArrayViewMut1<'_, u8>,
     mut quals: ArrayViewMut1<'_, f32>,
     window_length: usize,
-    tbuffer: &mut [u8],
+    tbuffer: &[u8],
 ) {
     bases.fill(b'*'); // Fill like forward
 
-    let tlen = tstart + window_length - tstart;
+    /*let tlen = tstart + window_length - tstart;
     target
         .seq
-        .get_subseq(tstart..tstart + window_length, tbuffer);
+        .get_subseq(tstart..tstart + window_length, tbuffer);*/
 
     let mut tpos = 0;
-    tbuffer[..tlen]
+    tbuffer[tstart..tstart + window_length]
         .iter()
         .zip(target.qual[tstart..tstart + window_length].iter())
         .enumerate()
@@ -269,13 +269,13 @@ fn write_target_for_window(
 
 fn get_features_for_window(
     overlaps: &mut [OverlapWindow],
-    ovlps_cigar_map: &HashMap<u32, Vec<CigarOp>>,
+    ovlps_cigar_map: &HashMap<u32, &Vec<CigarOp>>,
     tid: u32,
     reads: &[HAECRecord],
     max_ins: &[u16],
     tstart: usize,
     window_length: usize, // Full window length
-    tbuffer: &mut [u8],
+    tbuffer: &[u8],
     qbuffer: &mut [u8],
 ) -> (Array2<u8>, Array2<f32>) {
     //Get features
@@ -334,17 +334,18 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     feats_output: &mut T,
 ) {
     let read = &reads[rid as usize];
+    reads[rid as usize].seq.get_sequence(tbuf);
 
     // Get overlaps for windows
     let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
     let mut windows = vec![Vec::new(); n_windows];
 
     let mut ovlps_cigar_map = HashMap::default();
-    for alignment in overlaps {
-        let overlap = Rc::new(alignment.overlap.clone());
-        let qid = overlap.return_other_id(rid);
+    for alignment in overlaps.iter() {
+        let qid = alignment.overlap.return_other_id(rid);
 
-        let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
+        // TODO - Remove this if unecessary
+        /*let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
 
         // TODO - get proper target and query
         let (tstart, tend, qstart, qend) = if overlap.tid == rid {
@@ -368,21 +369,23 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
                 .seq
                 .get_rc_subseq(qstart as usize..qend as usize, qbuf);
         }
-        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]);
+        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]); */
+
+        let (tshift, qshift) = (0, 0);
 
         //Extract windows
-        let is_target = overlap.tid == rid;
+        let is_target = alignment.overlap.tid == rid;
         extract_windows(
             &mut windows,
-            overlap,
-            &cigar,
+            &alignment.overlap,
+            &alignment.cigar,
             tshift,
             qshift,
             is_target,
             window_size,
         );
 
-        ovlps_cigar_map.insert(qid, cigar);
+        ovlps_cigar_map.insert(qid, &alignment.cigar);
     }
 
     // Create directory for the read
@@ -419,8 +422,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
             let tstart = ow.tstart as usize;
             let tend = i * window_size as usize + win_len;
-            let tlen = tend - tstart;
-            reads[rid as usize].seq.get_subseq(tstart..tend, tbuf);
+            //reads[rid as usize].seq.get_subseq(tstart..tend, tbuf);
 
             let qid = ow.overlap.return_other_id(rid);
             let (qstart, qend) = get_query_region(ow, rid);
@@ -434,7 +436,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
                     .get_rc_subseq(qstart as usize..qend as usize, qbuf),
             }
 
-            let acc = calculate_accuracy(ow, cigar, &tbuf[..tlen], &qbuf[..qlen]);
+            let acc = calculate_accuracy(ow, cigar, &tbuf[tstart..tend], &qbuf[..qlen]);
             OrderedFloat(-acc)
         });
 

@@ -166,8 +166,8 @@ pub fn error_correction<T, U, V>(
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
-            let (infer_sender, infer_recv) = bounded(1_000);
-            let (cons_sender, cons_recv) = bounded(1_000);
+            let (infer_sender, infer_recv) = bounded(100);
+            let (cons_sender, cons_recv) = unbounded();
             let writer_s = writer_sender.clone();
 
             for _ in 0..threads {

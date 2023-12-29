@@ -119,7 +119,7 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     })
 }*/
 
-pub(crate) fn calculate_accuracy(cigar: &[CigarOp], tseq: &[u8], qseq: &[u8]) -> f32 {
+pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {
