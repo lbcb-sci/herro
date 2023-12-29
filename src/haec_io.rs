@@ -56,6 +56,7 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
         reads.push(HAECRecord::new(id, description, seq, qual));
     }
 
+    reads.shrink_to_fit();
     reads
 }
 

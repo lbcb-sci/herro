@@ -178,7 +178,7 @@ fn consensus(
                     corrected.len(),
                     'S',
                     base
-                ); */
+                );*/
                 if base != b'*' {
                     corrected.push(base);
                 }
@@ -228,6 +228,7 @@ pub(crate) fn consensus_worker(
     receiver: Receiver<ConsensusData>,
     sender: Sender<(usize, Vec<Vec<u8>>)>,
     window_size: u32,
+    device: usize,
 ) {
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     let mut buffer = vec![0; max_len];
@@ -240,6 +241,7 @@ pub(crate) fn consensus_worker(
         let rid = output.rid as usize;
         let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
 
+        //println!("Consensus device: {}, in {}", device, receiver.len());
         if let Some(s) = seq {
             sender.send((rid, s)).unwrap();
         }

@@ -4,13 +4,13 @@ use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 
 use lazy_static::lazy_static;
-use ndarray::{Array2, Axis};
+use ndarray::{s, Array2, ArrayBase, Axis, Data, Ix2};
 
 use tch::{CModule, IValue, IndexOp, Tensor};
 
 use crate::{
     consensus::{ConsensusData, ConsensusWindow},
-    features::{get_target_indices, SupportedPos},
+    features::SupportedPos,
 };
 
 const BASE_PADDING: u8 = 11;
@@ -104,7 +104,32 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         wids.push(*wid);
         let l = f.bases.len_of(Axis(0));
 
-        for p in 0..l {
+        let bt = unsafe {
+            let shape: Vec<_> = f.bases.shape().iter().map(|s| *s as i64).collect();
+            Tensor::from_blob(
+                f.bases.as_ptr(),
+                &shape,
+                &[shape[shape.len() - 1], 1],
+                tch::Kind::Uint8,
+                tch::Device::Cpu,
+            )
+        };
+
+        let qt = unsafe {
+            let shape: Vec<_> = f.quals.shape().iter().map(|s| *s as i64).collect();
+            Tensor::from_blob(
+                f.quals.as_ptr() as *const u8,
+                &shape,
+                &[shape[shape.len() - 1], 1],
+                tch::Kind::Float,
+                tch::Device::Cpu,
+            )
+        };
+
+        bases.i((idx as i64, ..l as i64, ..)).copy_(&bt);
+        quals.i((idx as i64, ..l as i64, ..)).copy_(&qt);
+
+        /*for p in 0..l {
             for r in 0..f.bases.len_of(Axis(1)) {
                 let _ = bases
                     .i((idx as i64, p as i64, r as i64))
@@ -114,17 +139,10 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
                     .i((idx as i64, p as i64, r as i64))
                     .fill_(f.quals[[p, r]] as f64);
             }
-        }
+        }*/
 
         //println!("Bases shape: {:?}", f.bases.shape());
         //println!("Quals shape: {:?}", f.quals.shape());
-
-        /*bases
-            .i((idx as i64, ..l as i64, ..))
-            .copy_(&Tensor::try_from(&f.bases).unwrap());
-        quals
-            .i((idx as i64, ..l as i64, ..))
-            .copy_(&Tensor::try_from(&f.quals).unwrap());*/
 
         lens.push(f.supported.len() as i32);
 
@@ -134,6 +152,14 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
             .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
             .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
+    }
+
+    if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
+        && batch[0].1.supported.contains(&SupportedPos::new(1157, 0))
+    {
+        bases.save("bases_to_test.tmp2.pt").unwrap();
+        quals.save("quals_to_test.tmp2.pt").unwrap();
+        indices[0].save("indices_to_test.tmp2.pt").unwrap();
     }
 
     InferenceBatch::new(wids, bases, quals, Tensor::try_from(lens).unwrap(), indices)
@@ -175,12 +201,12 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
     input_channel: Receiver<InferenceData>,
     output_channel: Sender<ConsensusData>,
 ) {
+    let _no_grad = tch::no_grad_guard();
+
     let d = match device {
         tch::Device::Cuda(d) => d,
         _ => unreachable!(),
     };
-
-    let _no_grad = tch::no_grad_guard();
 
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
@@ -228,9 +254,7 @@ pub(crate) fn prepare_examples(
         .map(|(n_alns, (mut bases, mut quals), supported)| {
             // Transform bases (encode) and quals (normalize)
             bases.mapv_inplace(|b| BASES_MAP[b as usize]);
-            quals.mapv_inplace(|q| {
-                2. * (f32::from(q) - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.
-            });
+            quals.mapv_inplace(|q| 2. * (q - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
             // Transpose: [R, L] -> [L, R]
             //bases.swap_axes(1, 0);
@@ -256,6 +280,21 @@ pub(crate) fn prepare_examples(
 
     let consensus_data = ConsensusData::new(rid, windows);
     InferenceData::new(consensus_data, batches)
+}
+
+fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usize> {
+    bases
+        .slice(s![.., 0])
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, b)| {
+            if *b != BASES_MAP[b'*' as usize] {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

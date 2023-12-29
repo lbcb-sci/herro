@@ -1,3 +1,4 @@
+use crossbeam_channel::Sender;
 use glob::glob;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
@@ -17,6 +18,7 @@ use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::bytes_to_u32;
 use crate::haec_io::HAECRecord;
 use crate::mm2;
+use crate::AlnMode;
 use crate::LINE_ENDING;
 use crate::READS_BATCH_SIZE;
 
@@ -114,13 +116,14 @@ pub fn parse_paf(
     mut reader: impl BufRead,
     name_to_id: &HashMap<&[u8], u32>,
     mut alns_writer: Option<&mut AutoFinishEncoder<BufWriter<File>>>,
-) -> Vec<Alignment> {
+    alignments: &mut Vec<Alignment>,
+) {
     //let mut reader = BufReader::new(read);
 
     let mut buffer = Vec::new();
     let mut processed = HashSet::default();
 
-    let mut alignments = Vec::new();
+    //let mut alignments = Vec::new();
     while let Ok(len) = reader.read_until(LINE_ENDING, &mut buffer) {
         if len == 0 {
             break;
@@ -182,7 +185,7 @@ pub fn parse_paf(
         buffer.clear();
     }
 
-    alignments
+    //alignments
 }
 
 #[allow(dead_code)]
@@ -226,7 +229,7 @@ fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     ops
 }
 
-pub(crate) fn generate_batches<'a, P, T>(
+/*pub(crate) fn generate_batches<'a, P, T>(
     reads: &'a [HAECRecord],
     name_to_id: &'a HashMap<&[u8], u32>,
     reads_path: P,
@@ -286,7 +289,7 @@ where
         let mut reader = {
             let file = File::open(p.unwrap()).unwrap();
             let reader = zstd::Decoder::new(file).unwrap();
-            BufReader::new(reader)
+            BufReader::with_capacity(65_536, reader)
         };
 
         // Read number of target reads
@@ -309,4 +312,115 @@ where
 
         (tids, alignments)
     })
+}
+
+fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
+    reads: &[HAECRecord],
+    reads_path: &T,
+    aln_mode: AlnMode<U>,
+    n_threads: usize,
+    alns_sender: Sender<(u32, Vec<Alignment>)>,
+) {
+    let name_to_id: HashMap<_, _> = reads
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (&*e.id, i as u32))
+        .collect();
+
+    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
+        AlnMode::None => {
+            let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, None::<T>);
+            Box::new(batches)
+        }
+        AlnMode::Read(path) => {
+            let batches = read_batches(&name_to_id, path);
+            Box::new(batches)
+        }
+        AlnMode::Write(path) => {
+            let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, Some(path));
+            Box::new(batches)
+        }
+    };
+
+    for (tids, alignments) in batches {
+        let mut read_to_alns = HashMap::default();
+        alignments.into_iter().for_each(|aln| {
+            if tids.contains(&aln.overlap.tid) {
+                read_to_alns
+                    .entry(aln.overlap.tid)
+                    .or_insert_with(|| Vec::new())
+                    .push(aln);
+            }
+        });
+
+        read_to_alns.into_iter().for_each(|example| {
+            println!("Aln reader: {}", alns_sender.len());
+            alns_sender.send(example).unwrap();
+        });
+    }
+} */
+
+pub(crate) fn aln_reader_worker<T, U>(
+    reads: &[HAECRecord],
+    reads_path: &T,
+    aln_mode: AlnMode<U>,
+    n_threads: usize,
+    alns_sender: Sender<(u32, Vec<Alignment>)>,
+) where
+    T: AsRef<Path>,
+    U: AsRef<Path>,
+{
+    let name_to_id: HashMap<_, _> = reads
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (&*e.id, i as u32))
+        .collect();
+
+    let path = match aln_mode {
+        AlnMode::Read(p) => p,
+        _ => unreachable!(),
+    };
+
+    let g = path.as_ref().join("*.oec.zst");
+    let mut alignments = Vec::new();
+    glob(g.to_str().unwrap()).unwrap().for_each(|p| {
+        let mut reader = {
+            let file = File::open(p.unwrap()).unwrap();
+            let reader = zstd::Decoder::new(file).unwrap();
+            BufReader::with_capacity(65_536, reader)
+        };
+
+        // Read number of target reads
+        let mut buf = Vec::new();
+        let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+        let n_targets = buf[..len - 1]
+            .iter()
+            .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
+
+        let tids: HashSet<_> = (0..n_targets)
+            .map(|_| {
+                buf.clear();
+                let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+
+                *name_to_id.get(&buf[..len - 1]).unwrap()
+            })
+            .collect();
+
+        parse_paf(&mut reader, &name_to_id, None, &mut alignments);
+
+        let mut read_to_alns = HashMap::default();
+        alignments.drain(..).for_each(|aln| {
+            if tids.contains(&aln.overlap.tid) {
+                read_to_alns
+                    .entry(aln.overlap.tid)
+                    .or_insert_with(|| Vec::new())
+                    .push(aln);
+            }
+        });
+
+        read_to_alns.into_iter().for_each(|example| {
+            //println!("Aln reader: {}", alns_sender.len());
+            alns_sender.send(example).unwrap();
+        });
+    });
 }

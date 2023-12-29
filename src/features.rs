@@ -5,12 +5,11 @@ use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
 
 use crossbeam_channel::Sender;
 
 use lazy_static::lazy_static;
-use ndarray::{s, Array, Array2, Array3, ArrayBase, ArrayViewMut1, ArrayViewMut2, Axis, Data, Ix2};
+use ndarray::{s, Array, Array2, ArrayBase, ArrayViewMut1, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 
 use crate::aligners::{fix_cigar, get_proper_cigar, CigarOp};
@@ -523,15 +522,6 @@ fn calculate_accuracy(window: &OverlapWindow, cigar: &[CigarOp], tseq: &[u8], qs
     (m as f32) / ((m + s + i + d) as f32)
 }
 
-pub(crate) fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usize> {
-    bases
-        .slice(s![.., 0])
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, b)| if *b != b'*' { Some(idx) } else { None })
-        .collect()
-}
-
 fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<SupportedPos>
 where
     S: Data<Elem = u8>,
@@ -617,7 +607,8 @@ fn output_features<P: AsRef<Path>>(
     path: P,
     window_id: u16,
     ids: &[&str],
-    features: &Array3<u8>,
+    features: &Array2<u8>,
+    quals: &Array2<f32>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
@@ -635,6 +626,16 @@ fn output_features<P: AsRef<Path>>(
         .writer(BufWriter::new(File::create(features_path)?))
         .begin_nd()?;
     writer.extend(features.iter())?;
+    writer.finish()?;
+
+    let quals_path = path.as_ref().join(format!("{}.quals.npy", window_id));
+    let shape: Vec<_> = quals.shape().iter().map(|&s| s as u64).collect();
+    let mut writer = npyz::WriteOptions::new()
+        .default_dtype()
+        .shape(&shape)
+        .writer(BufWriter::new(File::create(quals_path)?))
+        .begin_nd()?;
+    writer.extend(quals.iter())?;
     writer.finish()?;
 
     let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
@@ -707,7 +708,14 @@ where
         let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        //output_features(&output_path, wid, &ids, &bases, supported.into_iter());
+        output_features(
+            &output_path,
+            wid,
+            &ids,
+            &bases,
+            &quals,
+            supported.into_iter(),
+        );
     }
 
     fn emit(&mut self) {

@@ -2,10 +2,12 @@ use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use features::extract_features;
 
 use haec_io::HAECRecord;
-use indicatif::{ParallelProgressIterator, ProgressBar};
 
+use indicatif::{ParallelProgressIterator, ProgressBar};
 use overlaps::Alignment;
-//use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+
+use rayon::iter::IntoParallelIterator;
+use rayon::prelude::*;
 use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use thread_local::ThreadLocal;
@@ -23,7 +25,7 @@ use crate::{
     consensus::consensus_worker,
     features::{FeatsGenOutput, InferenceOutput},
     inference::inference_worker,
-    overlaps::{generate_batches, read_batches},
+    overlaps::aln_reader_worker,
 };
 
 mod aligners;
@@ -156,16 +158,16 @@ pub fn error_correction<T, U, V>(
     eprintln!("Parsed {} reads.", reads.len());
 
     let (alns_sender, alns_receiver) = bounded(10_000);
-    let (writer_sender, writer_receiver) = bounded(10_000);
+    let (writer_sender, writer_receiver) = unbounded();
     let (pbar_sender, pbar_receiver) = unbounded();
     let pbar = ProgressBar::new(reads.len() as u64);
     thread::scope(|s| {
-        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender));
+        s.spawn(|| aln_reader_worker(&reads, &reads_path, aln_mode, threads, alns_sender));
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
-            let (infer_sender, infer_recv) = bounded(10_000);
-            let (cons_sender, cons_recv) = bounded(10_000);
+            let (infer_sender, infer_recv) = bounded(1_000);
+            let (cons_sender, cons_recv) = bounded(1_000);
             let writer_s = writer_sender.clone();
 
             for _ in 0..threads {
@@ -174,6 +176,8 @@ pub fn error_correction<T, U, V>(
 
                 let ref_reads = &reads;
                 s.spawn(move || {
+                    let _guard = tch::no_grad_guard();
+
                     let mut feats_output = InferenceOutput::new(infer_s, batch_size);
                     let mut tbuf = vec![0; max_len];
                     let mut qbuf = vec![0; max_len];
@@ -204,7 +208,13 @@ pub fn error_correction<T, U, V>(
                     cons_sender,
                 )
             });
-            s.spawn(|| consensus_worker(&reads, cons_recv, writer_s, window_size));
+
+            // TODO Fix this move
+            let ref_reads = &reads;
+            let device_again = device;
+            s.spawn(move || {
+                consensus_worker(ref_reads, cons_recv, writer_s, window_size, device_again)
+            });
 
             //drop(infer_sender);
         }
@@ -221,51 +231,6 @@ pub fn error_correction<T, U, V>(
 
         drop(pbar_receiver);
     });
-}
-
-fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
-    reads: &[HAECRecord],
-    reads_path: &T,
-    aln_mode: AlnMode<U>,
-    n_threads: usize,
-    alns_sender: Sender<(u32, Vec<Alignment>)>,
-) {
-    let name_to_id: HashMap<_, _> = reads
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (&*e.id, i as u32))
-        .collect();
-
-    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
-        AlnMode::None => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, None::<T>);
-            Box::new(batches)
-        }
-        AlnMode::Read(path) => {
-            let batches = read_batches(&name_to_id, path);
-            Box::new(batches)
-        }
-        AlnMode::Write(path) => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, Some(path));
-            Box::new(batches)
-        }
-    };
-
-    for (tids, alignments) in batches {
-        let mut read_to_alns = HashMap::default();
-        alignments.into_iter().for_each(|aln| {
-            if tids.contains(&aln.overlap.tid) {
-                read_to_alns
-                    .entry(aln.overlap.tid)
-                    .or_insert_with(|| Vec::new())
-                    .push(aln);
-            }
-        });
-
-        read_to_alns
-            .into_iter()
-            .for_each(|example| alns_sender.send(example).unwrap())
-    }
 }
 
 fn correction_writer<U: AsRef<Path>>(
@@ -301,7 +266,12 @@ fn correction_writer<U: AsRef<Path>>(
             }
         }
 
-        pbar_sender.send(());
+        /*println!(
+            "Writer: in {}, out {}",
+            consensus_recv.len(),
+            pbar_sender.len()
+        );*/
+        pbar_sender.send(()).unwrap();
     }
 }
 
