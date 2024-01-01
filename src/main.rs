@@ -2,6 +2,9 @@ use clap::{Args, Parser, Subcommand};
 
 use ont_haec_rs::{error_correction, AlnMode};
 
+/*#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;*/
+
 #[derive(Parser)]
 #[command(author, version, about)]
 struct Cli {
@@ -97,6 +100,8 @@ struct InferenceArgs {
 }
 
 fn main() {
+    //let _profiler = dhat::Profiler::new_heap();
+
     let cli = Cli::parse();
 
     match cli.command {

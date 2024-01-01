@@ -5,7 +5,7 @@ use std::{cmp::Reverse, collections::BinaryHeap};
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 use itertools::MinMaxResult::*;
-use lazy_static::lazy_static;
+
 use ndarray::{s, Axis};
 use rustc_hash::FxHashMap as HashMap;
 
@@ -14,22 +14,8 @@ use crate::features::TOP_K;
 use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
 
-lazy_static! {
-    static ref BASES_UPPER: [u8; 10] = {
-        let mut map = [0; 10];
-        map[0] = b'A';
-        map[1] = b'C';
-        map[2] = b'G';
-        map[3] = b'T';
-        map[4] = b'*';
-        map[5] = b'A';
-        map[6] = b'C';
-        map[7] = b'G';
-        map[8] = b'T';
-        map[9] = b'*';
-        map
-    };
-}
+const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
+const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
 
 // Bases, tidx, supported, logits
 pub(crate) struct ConsensusWindow {
@@ -95,15 +81,7 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(
-    data: ConsensusData,
-    read: &HAECRecord,
-    window_size: usize,
-    buffer: &mut Vec<u8>,
-) -> Option<Vec<Vec<u8>>> {
-    read.seq.get_sequence(buffer);
-    let uncorrected = &buffer[..read.seq.len()];
-
+fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
@@ -183,22 +161,29 @@ fn consensus(
                     corrected.push(base);
                 }
             } else {
-                let most_common = two_most_frequent(col.iter().filter_map(|b| {
-                    if *b != BASES_MAP[b'.' as usize] {
-                        Some(BASES_UPPER[*b as usize])
-                    } else {
-                        None
+                // Count bases
+                counts.iter_mut().for_each(|c| *c = 0);
+                col.iter().for_each(|&b| {
+                    if b != BASES_MAP[b'.' as usize] {
+                        counts[BASES_UPPER_COUNTER[b as usize]] += 1;
                     }
-                }));
+                });
+
+                // Get two most common bases and counts - (c, b)
+                let (mc0, mc1) = counts
+                    .iter()
+                    .enumerate()
+                    .sorted_by_key(|(_, c)| Reverse(*c))
+                    .take(2)
+                    .map(|(i, c)| (*c, BASES_UPPER[i]))
+                    .collect_tuple()
+                    .unwrap();
                 let tbase = BASES_UPPER[col[0] as usize];
 
-                let base = if most_common.len() == 2
-                    && most_common[0].0 == most_common[1].0
-                    && (most_common[0].1 == tbase || most_common[1].1 == tbase)
-                {
+                let base = if mc0.0 == mc1.0 && (mc0.1 == tbase || mc1.1 == tbase) {
                     tbase
                 } else {
-                    most_common[0].1
+                    mc0.1
                 };
 
                 /*println!(
@@ -230,8 +215,7 @@ pub(crate) fn consensus_worker(
     window_size: u32,
     device: usize,
 ) {
-    let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    let mut buffer = vec![0; max_len];
+    let mut counts = [0u8; 5];
     loop {
         let output = match receiver.recv() {
             Ok(output) => output,
@@ -239,7 +223,7 @@ pub(crate) fn consensus_worker(
         };
 
         let rid = output.rid as usize;
-        let seq = consensus(output, &reads[rid], window_size as usize, &mut buffer);
+        let seq = consensus(output, &mut counts);
 
         //println!("Consensus device: {}, in {}", device, receiver.len());
         if let Some(s) = seq {

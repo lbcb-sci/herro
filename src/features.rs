@@ -4,11 +4,9 @@ use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
-use std::rc::Rc;
 
 use crossbeam_channel::Sender;
 
-use lazy_static::lazy_static;
 use ndarray::{s, Array, Array2, ArrayBase, ArrayViewMut1, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 
@@ -20,30 +18,25 @@ use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
 
-lazy_static! {
-    static ref BASE_LOWER: [u8; 128] = {
-        let mut arr = [255; 128];
-        arr[b'A' as usize] = b'a';
-        arr[b'C' as usize] = b'c';
-        arr[b'G' as usize] = b'g';
-        arr[b'T' as usize] = b't';
-        arr
-    };
-    static ref BASE_FORWARD: [u8; 128] = {
-        let mut arr = [255; 128];
-        arr[b'A' as usize] = b'A';
-        arr[b'C' as usize] = b'C';
-        arr[b'G' as usize] = b'G';
-        arr[b'T' as usize] = b'T';
-        arr[b'*' as usize] = b'*';
-        arr[b'a' as usize] = b'A';
-        arr[b'c' as usize] = b'C';
-        arr[b'g' as usize] = b'G';
-        arr[b't' as usize] = b'T';
-        arr[b'#' as usize] = b'*';
-        arr
-    };
-}
+const BASE_LOWER: [u8; 128] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 97, 255, 99, 255, 255, 255, 103, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 116, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
+
+const BASE_FORWARD: [u8; 128] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 42, 255, 255,
+    255, 255, 255, 255, 42, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 65, 255, 67, 255, 255, 255, 71, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 84, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 65, 255, 67, 255, 255, 255, 71, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 84, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
 
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps

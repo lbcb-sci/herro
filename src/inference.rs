@@ -3,7 +3,6 @@ use std::path::Path;
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 
-use lazy_static::lazy_static;
 use ndarray::{s, Array2, ArrayBase, Axis, Data, Ix2};
 
 use tch::{CModule, IValue, IndexOp, Tensor};
@@ -17,23 +16,15 @@ const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 126.;
 
-lazy_static! {
-    pub(crate) static ref BASES_MAP: [u8; 128] = {
-        let mut map = [0; 128];
-        map[b'A' as usize] = 0;
-        map[b'C' as usize] = 1;
-        map[b'G' as usize] = 2;
-        map[b'T' as usize] = 3;
-        map[b'*' as usize] = 4;
-        map[b'a' as usize] = 5;
-        map[b'c' as usize] = 6;
-        map[b'g' as usize] = 7;
-        map[b't' as usize] = 8;
-        map[b'#' as usize] = 9;
-        map[b'.' as usize] = 10;
-        map
-    };
-}
+pub(crate) const BASES_MAP: [u8; 128] = [
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 9, 255, 255,
+    255, 255, 255, 255, 4, 255, 255, 255, 10, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 255, 0, 255, 1, 255, 255, 255, 2, 255, 255, 255, 255, 255,
+    255, 255, 255, 255, 255, 255, 255, 3, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    255, 5, 255, 6, 255, 255, 255, 7, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    8, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+];
 
 pub(crate) struct InferenceBatch {
     wids: Vec<u32>,
