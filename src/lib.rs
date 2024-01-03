@@ -25,7 +25,7 @@ use crate::{
     consensus::consensus_worker,
     features::{FeatsGenOutput, InferenceOutput},
     inference::inference_worker,
-    overlaps::aln_reader_worker,
+    overlaps::alignment_reader,
 };
 
 mod aligners;
@@ -157,12 +157,12 @@ pub fn error_correction<T, U, V>(
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
     eprintln!("Parsed {} reads.", reads.len());
 
-    let (alns_sender, alns_receiver) = bounded(10_000);
+    let (alns_sender, alns_receiver) = bounded(50_000);
     let (writer_sender, writer_receiver) = unbounded();
     let (pbar_sender, pbar_receiver) = unbounded();
     let pbar = ProgressBar::new(reads.len() as u64);
     thread::scope(|s| {
-        s.spawn(|| aln_reader_worker(&reads, &reads_path, aln_mode, threads, alns_sender));
+        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender));
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {

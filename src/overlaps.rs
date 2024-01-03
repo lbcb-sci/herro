@@ -116,14 +116,14 @@ pub fn parse_paf(
     mut reader: impl BufRead,
     name_to_id: &HashMap<&[u8], u32>,
     mut alns_writer: Option<&mut AutoFinishEncoder<BufWriter<File>>>,
-    alignments: &mut Vec<Alignment>,
-) {
+) -> HashMap<u32, Vec<Alignment>> {
     //let mut reader = BufReader::new(read);
 
     let mut buffer = Vec::new();
     let mut processed = HashSet::default();
 
     //let mut alignments = Vec::new();
+    let mut tid_to_alns = HashMap::default();
     while let Ok(len) = reader.read_until(LINE_ENDING, &mut buffer) {
         if len == 0 {
             break;
@@ -176,7 +176,10 @@ pub fn parse_paf(
 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         let alignment = Alignment::new(overlap, cigar);
-        alignments.push(alignment);
+        tid_to_alns
+            .entry(tid)
+            .or_insert_with(|| Vec::new())
+            .push(alignment);
 
         if let Some(ref mut aw) = alns_writer {
             aw.write_all(&buffer[..len]).unwrap();
@@ -185,7 +188,7 @@ pub fn parse_paf(
         buffer.clear();
     }
 
-    //alignments
+    tid_to_alns
 }
 
 #[allow(dead_code)]
@@ -230,13 +233,13 @@ fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     ops
 }
 
-/*pub(crate) fn generate_batches<'a, P, T>(
+pub(crate) fn generate_batches<'a, P, T>(
     reads: &'a [HAECRecord],
     name_to_id: &'a HashMap<&[u8], u32>,
     reads_path: P,
     threads: usize,
     alns_path: Option<T>,
-) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+) -> impl Iterator<Item = HashMap<u32, Vec<Alignment>>> + 'a
 where
     P: AsRef<Path>,
     P: 'a,
@@ -252,11 +255,6 @@ where
         .map(move |(batch_idx, batch)| {
             let mm2_out = BufReader::new(mm2::call_mm2(batch, &reads_path, threads));
 
-            let tids: HashSet<_> = batch
-                .iter()
-                .map(|r| *name_to_id.get(&*r.id).unwrap())
-                .collect();
-
             let mut writer = alns_path.as_ref().map(|ap| {
                 let batch_path = ap.as_ref().join(format!("{batch_idx}.oec.zst"));
                 let file = File::create(batch_path).unwrap();
@@ -271,16 +269,14 @@ where
                 w
             });
 
-            let alignments = parse_paf(mm2_out, &name_to_id, writer.as_mut());
-
-            (tids, alignments)
+            parse_paf(mm2_out, &name_to_id, writer.as_mut())
         })
 }
 
 pub(crate) fn read_batches<'a, P>(
     name_to_id: &'a HashMap<&[u8], u32>,
     batches: P,
-) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
+) -> impl Iterator<Item = HashMap<u32, Vec<Alignment>>> + 'a
 where
     P: AsRef<Path>,
     P: 'a,
@@ -300,7 +296,7 @@ where
             .iter()
             .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
 
-        let tids: HashSet<_> = (0..n_targets)
+        let _tids: HashSet<_> = (0..n_targets)
             .map(|_| {
                 buf.clear();
                 let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
@@ -309,13 +305,11 @@ where
             })
             .collect();
 
-        let alignments = parse_paf(&mut reader, name_to_id, None);
-
-        (tids, alignments)
+        parse_paf(&mut reader, name_to_id, None)
     })
 }
 
-fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
+pub(crate) fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
     reads: &[HAECRecord],
     reads_path: &T,
     aln_mode: AlnMode<U>,
@@ -328,7 +322,7 @@ fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
         .map(|(i, e)| (&*e.id, i as u32))
         .collect();
 
-    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
+    let batches: Box<dyn Iterator<Item = HashMap<u32, Vec<Alignment>>>> = match aln_mode {
         AlnMode::None => {
             let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, None::<T>);
             Box::new(batches)
@@ -343,8 +337,8 @@ fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
         }
     };
 
-    for (tids, alignments) in batches {
-        let mut read_to_alns = HashMap::default();
+    for alignments in batches {
+        /*let mut read_to_alns = HashMap::default();
         alignments.into_iter().for_each(|aln| {
             if tids.contains(&aln.overlap.tid) {
                 read_to_alns
@@ -352,16 +346,16 @@ fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
                     .or_insert_with(|| Vec::new())
                     .push(aln);
             }
-        });
+        });*/
 
-        read_to_alns.into_iter().for_each(|example| {
-            println!("Aln reader: {}", alns_sender.len());
+        alignments.into_iter().for_each(|example| {
+            //println!("Aln reader: {}", alns_sender.len());
             alns_sender.send(example).unwrap();
         });
     }
-} */
+}
 
-pub(crate) fn aln_reader_worker<T, U>(
+/*pub(crate) fn aln_reader_worker<T, U>(
     reads: &[HAECRecord],
     reads_path: &T,
     aln_mode: AlnMode<U>,
@@ -424,4 +418,4 @@ pub(crate) fn aln_reader_worker<T, U>(
             alns_sender.send(example).unwrap();
         });
     });
-}
+}*/

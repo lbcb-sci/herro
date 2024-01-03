@@ -2,8 +2,10 @@ use clap::{Args, Parser, Subcommand};
 
 use ont_haec_rs::{error_correction, AlnMode};
 
-/*#[global_allocator]
-static ALLOC: dhat::Alloc = dhat::Alloc;*/
+use jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 
 #[derive(Parser)]
 #[command(author, version, about)]

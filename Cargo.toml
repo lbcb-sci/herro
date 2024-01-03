@@ -29,7 +29,7 @@ rustc-hash = "~1.1.0"
 glob = "~0.3.1"
 zstd = "~0.13.0"
 rand = "~0.8.5"
-dhat = "~0.3.2"
+jemallocator = "~0.5.4"
 
 [dev-dependencies]
 approx = "~0.5.1"

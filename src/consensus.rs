@@ -81,7 +81,10 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
+fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Option<Vec<Vec<u8>>> {
+    // TODO - reads are not needed
+    let read = &reads[data.rid as usize];
+
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
@@ -180,7 +183,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                     .unwrap();
                 let tbase = BASES_UPPER[col[0] as usize];
 
-                let base = if mc0.0 == mc1.0 && (mc0.1 == tbase || mc1.1 == tbase) {
+                let base = if mc0.0 < 2 || (mc0.0 == mc1.0 && (mc0.1 == tbase || mc1.1 == tbase)) {
                     tbase
                 } else {
                     mc0.1
@@ -223,7 +226,7 @@ pub(crate) fn consensus_worker(
         };
 
         let rid = output.rid as usize;
-        let seq = consensus(output, &mut counts);
+        let seq = consensus(output, &mut counts, reads);
 
         //println!("Consensus device: {}, in {}", device, receiver.len());
         if let Some(s) = seq {
