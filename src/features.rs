@@ -779,7 +779,10 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         }
     }
 
-    fn emit(&mut self) {}
+    fn emit(&mut self) {
+        let data = prepare_examples(self.features.drain(..), self.batch_size);
+        self.sender.send(data).unwrap();
+    }
 }
 
 #[derive(npyz::AutoSerialize, npyz::Serialize, PartialEq, Eq, Hash, Clone, Copy)]

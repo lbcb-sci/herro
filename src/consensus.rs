@@ -149,14 +149,14 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
                     _ => panic!("Unrecognized base"),
                 };
 
-                if *il > 0.0 {
+                /*if *il > 0.0 {
                     println!(
                         "{}\t{}\t{}",
                         std::str::from_utf8(&read.id).unwrap(),
                         corrected_seqs.len(),
                         corrected.len(),
                     );
-                }
+                }*/
 
                 /*println!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
