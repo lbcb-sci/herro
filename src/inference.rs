@@ -214,11 +214,11 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
                 .zip(info_logits.into_iter())
                 .zip(bases_logits.into_iter())
                 .for_each(|((wid, il), bl)| {
-                    data.consensus_data.windows[wid as usize]
+                    data.consensus_data[wid as usize]
                         .info_logits
                         .replace(Vec::try_from(il).unwrap());
 
-                    data.consensus_data.windows[wid as usize]
+                    data.consensus_data[wid as usize]
                         .bases_logits
                         .replace(Vec::try_from(bl).unwrap());
                 });
@@ -236,25 +236,37 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 }
 
 pub(crate) fn prepare_examples(
-    rid: u32,
-    features: impl IntoIterator<Item = (usize, (Array2<u8>, Array2<f32>), Vec<SupportedPos>)>,
+    features: impl IntoIterator<Item = WindowExample>,
     batch_size: usize,
 ) -> InferenceData {
     let windows: Vec<_> = features
         .into_iter()
-        .map(|(n_alns, (mut bases, mut quals), supported)| {
+        .map(|mut example| {
             // Transform bases (encode) and quals (normalize)
-            bases.mapv_inplace(|b| BASES_MAP[b as usize]);
-            quals.mapv_inplace(|q| 2. * (q - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
+            example.bases.mapv_inplace(|b| BASES_MAP[b as usize]);
+            example
+                .quals
+                .mapv_inplace(|q| 2. * (q - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
             // Transpose: [R, L] -> [L, R]
             //bases.swap_axes(1, 0);
             //quals.swap_axes(1, 0);
 
-            let tidx = get_target_indices(&bases);
+            let tidx = get_target_indices(&example.bases);
 
             //TODO: Start here.
-            ConsensusWindow::new(n_alns, bases, quals, tidx, supported, None, None)
+            ConsensusWindow::new(
+                example.rid,
+                example.wid,
+                example.n_alns,
+                example.n_total_wins,
+                example.bases,
+                example.quals,
+                tidx,
+                example.supported,
+                None,
+                None,
+            )
         })
         .collect();
 
@@ -269,8 +281,7 @@ pub(crate) fn prepare_examples(
         })
         .collect();
 
-    let consensus_data = ConsensusData::new(rid, windows);
-    InferenceData::new(consensus_data, batches)
+    InferenceData::new(windows, batches)
 }
 
 fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usize> {
@@ -286,6 +297,38 @@ fn get_target_indices<S: Data<Elem = u8>>(bases: &ArrayBase<S, Ix2>) -> Vec<usiz
             }
         })
         .collect()
+}
+
+pub(crate) struct WindowExample {
+    rid: u32,
+    wid: u16,
+    n_alns: u8,
+    bases: Array2<u8>,
+    quals: Array2<f32>,
+    supported: Vec<SupportedPos>,
+    n_total_wins: u16,
+}
+
+impl WindowExample {
+    pub(crate) fn new(
+        rid: u32,
+        wid: u16,
+        n_alns: u8,
+        bases: Array2<u8>,
+        quals: Array2<f32>,
+        supported: Vec<SupportedPos>,
+        n_total_wins: u16,
+    ) -> Self {
+        Self {
+            rid,
+            wid,
+            n_alns,
+            bases,
+            quals,
+            supported,
+            n_total_wins,
+        }
+    }
 }
 
 #[cfg(test)]

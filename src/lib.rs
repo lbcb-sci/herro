@@ -259,7 +259,7 @@ fn correction_writer<U: AsRef<Path>>(
             for (i, seq) in seqs.into_iter().enumerate() {
                 write!(&mut writer, ">").unwrap();
                 writer.write_all(&reads[rid].id).unwrap();
-                write!(&mut writer, "_{}\n", i).unwrap();
+                write!(&mut writer, ":{}\n", i).unwrap();
 
                 writer.write_all(&seq).unwrap();
                 write!(&mut writer, "\n").unwrap();

@@ -12,7 +12,7 @@ use ordered_float::OrderedFloat;
 
 use crate::aligners::CigarOp;
 use crate::haec_io::HAECRecord;
-use crate::inference::{prepare_examples, InferenceData};
+use crate::inference::{prepare_examples, InferenceData, WindowExample};
 use crate::overlaps::{self, Alignment, Strand};
 use crate::windowing::{extract_windows, OverlapWindow};
 
@@ -462,7 +462,15 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let supported = get_supported(&bases);
 
-        feats_output.update(bases, quals, supported, qids, i as u16);
+        feats_output.update(
+            rid,
+            i as u16,
+            bases,
+            quals,
+            supported,
+            qids,
+            n_windows as u16,
+        );
     }
 
     feats_output.emit();
@@ -650,11 +658,13 @@ pub(crate) trait FeaturesOutput<'a> {
         'b: 'a;
     fn update(
         &mut self,
+        rid: u32,
+        wid: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
-        wid: u16,
+        n_wids: u16,
     );
     fn emit(&mut self);
 }
@@ -693,11 +703,13 @@ where
 
     fn update(
         &mut self,
+        rid: u32,
+        wid: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
-        wid: u16,
+        n_wids: u16,
     ) {
         let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
         let output_path = self.base_path.as_ref().join(rid);
@@ -718,52 +730,56 @@ where
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct InferenceOutput<'a> {
+pub(crate) struct InferenceOutput {
     sender: Sender<InferenceData>,
-    rid: u32,
-    rname: Option<&'a [u8]>,
-    features: Vec<(usize, (Array2<u8>, Array2<f32>), Vec<SupportedPos>)>,
+    features: Vec<WindowExample>,
     batch_size: usize,
 }
 
-impl InferenceOutput<'_> {
+impl InferenceOutput {
     pub(crate) fn new(sender: Sender<InferenceData>, batch_size: usize) -> Self {
         Self {
             sender,
-            rid: u32::MAX,
-            rname: None,
-            features: Vec::new(),
+            features: Vec::with_capacity(batch_size),
             batch_size: batch_size,
         }
     }
 }
 
-impl<'a> FeaturesOutput<'a> for InferenceOutput<'a> {
-    fn init<'b>(&mut self, rid: u32, rname: &'b [u8])
+impl<'a> FeaturesOutput<'a> for InferenceOutput {
+    fn init<'b>(&mut self, _rid: u32, _rname: &'b [u8])
     where
         'b: 'a,
     {
-        self.rid = rid;
-        self.rname.replace(rname);
-        self.features.clear();
     }
 
     fn update(
         &mut self,
+        rid: u32,
+        wid: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
-        _wid: u16,
+        n_wids: u16,
     ) {
-        self.features.push((ids.len(), (bases, quals), supported));
+        self.features.push(WindowExample::new(
+            rid,
+            wid,
+            ids.len().min(TOP_K) as u8,
+            bases,
+            quals,
+            supported,
+            n_wids,
+        ));
+
+        if self.features.len() == self.batch_size {
+            let data = prepare_examples(self.features.drain(..), self.batch_size);
+            self.sender.send(data).unwrap();
+        }
     }
 
-    fn emit(&mut self) {
-        let data = prepare_examples(self.rid, self.features.drain(..), self.batch_size);
-        self.sender.send(data).unwrap();
-    }
+    fn emit(&mut self) {}
 }
 
 #[derive(npyz::AutoSerialize, npyz::Serialize, PartialEq, Eq, Hash, Clone, Copy)]

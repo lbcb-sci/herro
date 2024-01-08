@@ -19,7 +19,10 @@ const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
 
 // Bases, tidx, supported, logits
 pub(crate) struct ConsensusWindow {
-    pub(crate) n_alns: usize,
+    pub(crate) rid: u32,
+    pub(crate) wid: u16,
+    pub(crate) n_alns: u8,
+    pub(crate) n_total_wins: u16,
     pub(crate) bases: Array2<u8>,
     pub(crate) quals: Array2<f32>,
     pub(crate) indices: Vec<usize>,
@@ -30,7 +33,10 @@ pub(crate) struct ConsensusWindow {
 
 impl ConsensusWindow {
     pub(crate) fn new(
-        n_alns: usize,
+        rid: u32,
+        wid: u16,
+        n_alns: u8,
+        n_total_wins: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
         indices: Vec<usize>,
@@ -39,7 +45,10 @@ impl ConsensusWindow {
         bases_logits: Option<Vec<u8>>,
     ) -> Self {
         Self {
+            rid,
+            wid,
             n_alns,
+            n_total_wins,
             bases,
             quals,
             indices,
@@ -50,16 +59,7 @@ impl ConsensusWindow {
     }
 }
 
-pub(crate) struct ConsensusData {
-    pub(crate) rid: u32,
-    pub(crate) windows: Vec<ConsensusWindow>,
-}
-
-impl ConsensusData {
-    pub(crate) fn new(rid: u32, windows: Vec<ConsensusWindow>) -> Self {
-        Self { rid, windows }
-    }
-}
+pub type ConsensusData = Vec<ConsensusWindow>;
 
 fn two_most_frequent<'a, I>(elements: I) -> Vec<(usize, u8)>
 where
@@ -83,13 +83,12 @@ where
 
 fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Option<Vec<Vec<u8>>> {
     // TODO - reads are not needed
-    let read = &reads[data.rid as usize];
+    let read = &reads[data[0].rid as usize];
 
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
     let minmax = data
-        .windows
         .iter()
         .enumerate()
         .filter_map(|(idx, win)| if win.n_alns > 1 { Some(idx) } else { None })
@@ -102,7 +101,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
         MinMax(st, en) => (st, en + 1),
     };
 
-    for (wid, window) in (wid_st..wid_en).zip(data.windows[wid_st..wid_en].iter()) {
+    for (wid, window) in (wid_st..wid_en).zip(data[wid_st..wid_en].iter()) {
         /*if window.n_alns < 2 {
             let start = wid * window_size;
             let end = ((wid + 1) * window_size).min(uncorrected.len());
@@ -117,8 +116,9 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
         }
 
         // Don't analyze empty rows: LxR -> LxN
-        let n_rows = (window.n_alns + 1).min(TOP_K + 1);
-        let bases = window.bases.slice(s![.., ..n_rows]);
+        //let n_rows = (window.n_alns + 1).min(TOP_K + 1);
+        let n_rows = window.n_alns + 1;
+        let bases = window.bases.slice(s![.., ..n_rows as usize]);
         let maybe_info = match window.supported.len() {
             0 => HashMap::default(),
             _ => window
@@ -139,7 +139,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
                 ins = 0;
             }
 
-            if let Some((_, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
+            if let Some((il, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
                 let base = match *b {
                     0 => b'A',
                     1 => b'C',
@@ -148,6 +148,15 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
                     4 => b'*',
                     _ => panic!("Unrecognized base"),
                 };
+
+                if *il > 0.0 {
+                    println!(
+                        "{}\t{}\t{}",
+                        std::str::from_utf8(&read.id).unwrap(),
+                        corrected_seqs.len(),
+                        corrected.len(),
+                    );
+                }
 
                 /*println!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -218,6 +227,7 @@ pub(crate) fn consensus_worker(
     window_size: u32,
     device: usize,
 ) {
+    let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];
     loop {
         let output = match receiver.recv() {
@@ -225,12 +235,25 @@ pub(crate) fn consensus_worker(
             Err(_) => break,
         };
 
-        let rid = output.rid as usize;
-        let seq = consensus(output, &mut counts, reads);
+        for cw in output {
+            let rid = cw.rid;
+            let n_total_wins = cw.n_total_wins;
+
+            let entry = consensus_data.entry(cw.rid).or_insert_with(|| Vec::new());
+            entry.push(cw);
+
+            if entry.len() == (n_total_wins as usize) {
+                let mut windows = consensus_data.remove(&rid).unwrap();
+                windows.sort_by_key(|cw| cw.wid);
+
+                let seq = consensus(windows, &mut counts, reads);
+
+                if let Some(s) = seq {
+                    sender.send((rid as usize, s)).unwrap();
+                }
+            }
+        }
 
         //println!("Consensus device: {}, in {}", device, receiver.len());
-        if let Some(s) = seq {
-            sender.send((rid, s)).unwrap();
-        }
     }
 }
