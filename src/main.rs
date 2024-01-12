@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::{error_correction, AlnMode};
+use ont_haec_rs::{error_correction, generate_features, AlnMode};
 
 use jemallocator::Jemalloc;
 
@@ -115,13 +115,13 @@ fn main() {
                 _ => unreachable!(),
             };
 
-            /*generate_features(
+            generate_features(
                 args.reads,
                 args.output,
                 args.feat_gen_threads,
                 args.window_size,
                 mode,
-            );*/
+            );
         }
         Commands::Inference(args) => {
             let mode = match (args.alns.read_alns, args.alns.write_alns) {

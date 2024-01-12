@@ -18,6 +18,8 @@ use crate::aligners::{cigar_to_string, CigarOp};
 use crate::haec_io::bytes_to_u32;
 use crate::haec_io::HAECRecord;
 use crate::mm2;
+
+use crate::pbars::PBarNotification;
 use crate::AlnMode;
 use crate::LINE_ENDING;
 use crate::READS_BATCH_SIZE;
@@ -315,6 +317,7 @@ pub(crate) fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
     aln_mode: AlnMode<U>,
     n_threads: usize,
     alns_sender: Sender<(u32, Vec<Alignment>)>,
+    pbar_sender: Sender<PBarNotification>,
 ) {
     let name_to_id: HashMap<_, _> = reads
         .iter()
@@ -347,6 +350,11 @@ pub(crate) fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
                     .push(aln);
             }
         });*/
+
+        // Notify pbar about the batch size
+        pbar_sender
+            .send(PBarNotification::BatchLen(alignments.len() as u64))
+            .unwrap();
 
         alignments.into_iter().for_each(|example| {
             //println!("Aln reader: {}", alns_sender.len());

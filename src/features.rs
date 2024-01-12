@@ -7,13 +7,14 @@ use std::path::Path;
 
 use crossbeam_channel::Sender;
 
-use ndarray::{s, Array, Array2, ArrayBase, ArrayViewMut1, Axis, Data, Ix2};
+use ndarray::{s, stack, Array, Array2, ArrayBase, ArrayViewMut1, Axis, Data, Ix2};
 use ordered_float::OrderedFloat;
 
 use crate::aligners::CigarOp;
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData, WindowExample};
-use crate::overlaps::{self, Alignment, Strand};
+use crate::overlaps::{Alignment, Strand};
+use crate::pbars::PBarNotification;
 use crate::windowing::{extract_windows, OverlapWindow};
 
 pub(crate) const TOP_K: usize = 30;
@@ -610,8 +611,8 @@ fn output_features<P: AsRef<Path>>(
     path: P,
     window_id: u16,
     ids: &[&str],
-    features: &Array2<u8>,
-    quals: &Array2<f32>,
+    bases: Array2<u8>,
+    quals: Array2<f32>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
@@ -622,6 +623,12 @@ fn output_features<P: AsRef<Path>>(
     }
 
     let features_path = path.as_ref().join(format!("{}.features.npy", window_id));
+
+    // Convert quals to u8 + stack feats
+    let quals = quals.mapv(|q| q as u8);
+    let features = stack![Axis(0), bases, quals];
+
+    // Write feats
     let shape: Vec<_> = features.shape().iter().map(|&s| s as u64).collect();
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
@@ -676,16 +683,18 @@ where
 {
     base_path: T,
     rname: Option<&'a [u8]>,
+    pbar_sender: Sender<PBarNotification>,
 }
 
 impl<T> FeatsGenOutput<'_, T>
 where
     T: AsRef<Path> + Clone,
 {
-    pub(crate) fn new(path: T) -> Self {
+    pub(crate) fn new(path: T, pbar_sender: Sender<PBarNotification>) -> Self {
         Self {
             base_path: path,
             rname: None,
+            pbar_sender: pbar_sender,
         }
     }
 }
@@ -703,29 +712,24 @@ where
 
     fn update(
         &mut self,
-        rid: u32,
+        _rid: u32,
         wid: u16,
         bases: Array2<u8>,
         quals: Array2<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
-        n_wids: u16,
+        _n_wids: u16,
     ) {
         let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
         let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(
-            &output_path,
-            wid,
-            &ids,
-            &bases,
-            &quals,
-            supported.into_iter(),
-        );
+        output_features(&output_path, wid, &ids, bases, quals, supported.into_iter()).unwrap();
     }
 
     fn emit(&mut self) {
+        self.pbar_sender.send(PBarNotification::Inc).unwrap();
+
         self.rname = None;
     }
 }

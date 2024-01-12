@@ -194,11 +194,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
 ) {
     let _no_grad = tch::no_grad_guard();
 
-    let d = match device {
-        tch::Device::Cuda(d) => d,
-        _ => unreachable!(),
-    };
-
     let mut model = tch::CModule::load_on_device(model_path, device).expect("Cannot load model.");
     model.set_eval();
 

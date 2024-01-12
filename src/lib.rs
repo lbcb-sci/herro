@@ -3,22 +3,18 @@ use features::extract_features;
 
 use haec_io::HAECRecord;
 
-use indicatif::{ParallelProgressIterator, ProgressBar};
-use overlaps::Alignment;
+use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget};
 
-use rayon::iter::IntoParallelIterator;
-use rayon::prelude::*;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-
-use thread_local::ThreadLocal;
+use pbars::{
+    get_alns_batches_pbar, get_parse_reads_spinner, set_parse_reads_spinner_finish,
+    PBarNotification,
+};
 
 use std::{
-    cell::RefCell,
     fs::File,
     io::{prelude::*, BufWriter},
     path::Path,
-    sync::Arc,
-    thread::{self, Scope},
+    thread::{self},
 };
 
 use crate::{
@@ -35,9 +31,11 @@ mod haec_io;
 mod inference;
 mod mm2;
 mod overlaps;
+mod pbars;
 mod windowing;
 
 pub(crate) const READS_BATCH_SIZE: usize = 100_000;
+pub(crate) const ALN_CHANNEL_CAPACITY: usize = 50_000;
 pub(crate) const LINE_ENDING: u8 = b'\n';
 
 pub enum AlnMode<V: AsRef<Path>> {
@@ -46,93 +44,64 @@ pub enum AlnMode<V: AsRef<Path>> {
     Write(V),
 }
 
-/*pub fn generate_features<T, U, V>(
+pub fn generate_features<T, U, V>(
     reads_path: T,
     output_path: U,
     threads: usize,
     window_size: u32,
     aln_mode: AlnMode<V>,
 ) where
-    T: AsRef<Path>,
+    T: AsRef<Path> + Send + Sync,
     U: AsRef<Path> + Send + Sync + Clone,
-    V: AsRef<Path>,
+    V: AsRef<Path> + Send,
 {
     // Get fastq reads
-    let reads = haec_io::get_reads(&reads_path, window_size);
+    let reads = parse_reads(&reads_path, window_size);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    let name_to_id: HashMap<_, _> = reads
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (&*e.id, i as u32))
-        .collect();
-    eprintln!("Parsed {} reads.", reads.len());
 
-    let sequences = Arc::new(ThreadLocal::new());
-    let fo_tl = Arc::new(ThreadLocal::new());
-    let feats_output = FeatsGenOutput::new(output_path);
+    let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
+    let (pbar_sender, pbar_receiver) = unbounded();
+    thread::scope(|s| {
+        let pbar_s = pbar_sender.clone();
+        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_global()
-        .unwrap();
+        for _ in 0..threads {
+            let pbar_s = pbar_sender.clone();
 
-    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
-        AlnMode::None => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, threads, None::<T>);
-            Box::new(batches)
-        }
-        AlnMode::Read(path) => {
-            let batches = read_batches(&name_to_id, path);
-            Box::new(batches)
-        }
-        AlnMode::Write(path) => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, threads, Some(path));
-            Box::new(batches)
-        }
-    };
+            s.spawn(|| {
+                let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
+                let mut tbuf = vec![0; max_len];
+                let mut qbuf = vec![0; max_len];
 
-    for (tids, alignments) in batches {
-        let mut read_to_alns = HashMap::default();
-        alignments.into_iter().for_each(|aln| {
-            if tids.contains(&aln.overlap.tid) {
-                read_to_alns
-                    .entry(aln.overlap.tid)
-                    .or_insert_with(|| Vec::new())
-                    .push(aln);
-            }
+                loop {
+                    let (rid, alns) = match alns_receiver.recv() {
+                        Ok(out) => out,
+                        Err(_) => break,
+                    };
 
-            /*if tids.contains(&aln.overlap.qid) {
-                read_to_alns
-                    .entry(aln.overlap.qid)
-                    .or_insert_with(|| Vec::new())
-                    .push(aln);
-            }*/
-        });
-
-        let n_targets = read_to_alns.len();
-        read_to_alns
-            .into_par_iter()
-            .progress_count(n_targets as u64)
-            .for_each(|(rid, alns)| {
-                let (target, query) = sequences.get_or(|| {
-                    (
-                        RefCell::new(vec![0u8; max_len]),
-                        RefCell::new(vec![0u8; max_len]),
-                    )
-                });
-                let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
-
-                extract_features(
-                    rid,
-                    &reads,
-                    alns,
-                    window_size,
-                    (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                    &mut *fo.borrow_mut(),
-                )
+                    extract_features(
+                        rid,
+                        &reads,
+                        alns,
+                        window_size,
+                        (&mut tbuf, &mut qbuf),
+                        &mut feats_output,
+                    );
+                }
             });
-    }
-}*/
+        }
+
+        drop(pbar_sender);
+
+        let pbar = ProgressBar::new(reads.len() as u64);
+        while let Ok(notification) = pbar_receiver.recv() {
+            match notification {
+                PBarNotification::Inc => pbar.inc(1),
+                _ => unimplemented!(),
+            }
+        }
+    });
+}
 
 pub fn error_correction<T, U, V>(
     reads_path: T,
@@ -149,24 +118,20 @@ pub fn error_correction<T, U, V>(
     V: AsRef<Path> + Send,
 {
     tch::set_num_threads(1);
-    //tch::set_num_interop_threads(1);
-    //tch::maybe_init_cuda();
 
-    // Get fastq reads
-    let reads = haec_io::get_reads(&reads_path, window_size);
+    let reads = parse_reads(&reads_path, window_size);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    eprintln!("Parsed {} reads.", reads.len());
 
-    let (alns_sender, alns_receiver) = bounded(50_000);
+    let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
     let (writer_sender, writer_receiver) = unbounded();
     let (pbar_sender, pbar_receiver) = unbounded();
-    let pbar = ProgressBar::new(reads.len() as u64);
     thread::scope(|s| {
-        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender));
+        let pbar_s = pbar_sender.clone();
+        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
-            let (infer_sender, infer_recv) = bounded(100);
+            let (infer_sender, infer_recv) = bounded(2 * threads);
             let (cons_sender, cons_recv) = unbounded();
             let writer_s = writer_sender.clone();
 
@@ -209,35 +174,57 @@ pub fn error_correction<T, U, V>(
                 )
             });
 
-            // TODO Fix this move
-            let ref_reads = &reads;
-            let device_again = device;
-            s.spawn(move || {
-                consensus_worker(ref_reads, cons_recv, writer_s, window_size, device_again)
-            });
-
-            //drop(infer_sender);
+            s.spawn(move || consensus_worker(cons_recv, writer_s));
         }
 
-        drop(alns_receiver);
         drop(writer_sender);
 
-        loop {
-            match pbar_receiver.recv() {
-                Ok(_) => pbar.inc(1),
-                Err(_) => break,
+        let mbar = MultiProgress::new();
+        let batches_bar = get_alns_batches_pbar(Some(&mbar));
+        let pbar = mbar.add(ProgressBar::hidden());
+
+        let mut batch_size = 0;
+        let mut n_batch = 1;
+        while let Ok(notification) = pbar_receiver.recv() {
+            match notification {
+                PBarNotification::BatchLen(l) => {
+                    batch_size = l;
+
+                    if n_batch == 0 {
+                        pbar.set_length(batch_size);
+                        pbar.set_draw_target(ProgressDrawTarget::stderr());
+                    }
+                }
+                PBarNotification::Inc => {
+                    if pbar.position() == pbar.length().unwrap() {
+                        n_batch += 1;
+                        batches_bar.set_message(format!("Processing {}/? batch", n_batch));
+
+                        pbar.set_length(batch_size);
+                        pbar.set_position(0);
+                    }
+
+                    pbar.inc(1);
+                }
             }
         }
-
-        drop(pbar_receiver);
     });
+}
+
+fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32) -> Vec<HAECRecord> {
+    // Get fastq reads
+    let spinner = get_parse_reads_spinner(None);
+    let reads = haec_io::get_reads(&reads_path, window_size);
+    set_parse_reads_spinner_finish(reads.len(), spinner);
+
+    reads
 }
 
 fn correction_writer<U: AsRef<Path>>(
     reads: &[HAECRecord],
     output_path: U,
     consensus_recv: Receiver<(usize, Vec<Vec<u8>>)>,
-    pbar_sender: Sender<()>,
+    pbar_sender: Sender<PBarNotification>,
 ) {
     let file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(file);
@@ -271,21 +258,6 @@ fn correction_writer<U: AsRef<Path>>(
             consensus_recv.len(),
             pbar_sender.len()
         );*/
-        pbar_sender.send(()).unwrap();
+        pbar_sender.send(PBarNotification::Inc).unwrap();
     }
-}
-
-fn create_gpu_pipeline<'a, 'b>(
-    reads: &'a [HAECRecord],
-    window_size: u32,
-    scope: &'b Scope,
-    device: usize,
-    model_path: &str,
-    batch_size: usize,
-    n_threads: usize,
-    alns_recv: Receiver<(u32, Vec<Alignment>)>,
-    writer_sender: Sender<(u32, Vec<Vec<u8>>)>,
-) where
-    'a: 'b,
-{
 }

@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use crate::{aligners::CigarOp, overlaps::Overlap};
 
 #[derive(Clone, Debug)]

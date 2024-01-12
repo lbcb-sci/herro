@@ -10,8 +10,7 @@ use ndarray::{s, Axis};
 use rustc_hash::FxHashMap as HashMap;
 
 use crate::features::SupportedPos;
-use crate::features::TOP_K;
-use crate::haec_io::HAECRecord;
+
 use crate::inference::BASES_MAP;
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
@@ -61,6 +60,7 @@ impl ConsensusWindow {
 
 pub type ConsensusData = Vec<ConsensusWindow>;
 
+#[allow(dead_code)]
 fn two_most_frequent<'a, I>(elements: I) -> Vec<(usize, u8)>
 where
     I: Iterator<Item = u8>,
@@ -81,10 +81,7 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Option<Vec<Vec<u8>>> {
-    // TODO - reads are not needed
-    let read = &reads[data[0].rid as usize];
-
+fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
@@ -101,7 +98,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
         MinMax(st, en) => (st, en + 1),
     };
 
-    for (wid, window) in (wid_st..wid_en).zip(data[wid_st..wid_en].iter()) {
+    for window in data[wid_st..wid_en].iter() {
         /*if window.n_alns < 2 {
             let start = wid * window_size;
             let end = ((wid + 1) * window_size).min(uncorrected.len());
@@ -139,7 +136,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
                 ins = 0;
             }
 
-            if let Some((il, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
+            if let Some((_, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
                 let base = match *b {
                     0 => b'A',
                     1 => b'C',
@@ -221,11 +218,8 @@ fn consensus(data: ConsensusData, counts: &mut [u8], reads: &[HAECRecord]) -> Op
 }
 
 pub(crate) fn consensus_worker(
-    reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
     sender: Sender<(usize, Vec<Vec<u8>>)>,
-    window_size: u32,
-    device: usize,
 ) {
     let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];
@@ -246,7 +240,7 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let seq = consensus(windows, &mut counts, reads);
+                let seq = consensus(windows, &mut counts);
 
                 if let Some(s) = seq {
                     sender.send((rid as usize, s)).unwrap();

@@ -17,10 +17,8 @@ debug = true
 clap = { version = "~4.4.2", features = ["derive"] }
 needletail = "~0.5.0"
 itertools = "~0.12.0"
-rayon = "~1.8.0"
-thread_local = "~1.1.4"
-indicatif = { version = "~0.17.2", features = ["rayon"] }
-ordered-float = "~4.1.0"
+indicatif = "~0.17.2"
+ordered-float = "~4.2.0"
 ndarray = "~0.15.6"
 npyz = { version = "~0.8.1", features = ["derive"] }
 tch = "0.13.0"
@@ -28,7 +26,6 @@ crossbeam-channel = "~0.5.8"
 rustc-hash = "~1.1.0"
 glob = "~0.3.1"
 zstd = "~0.13.0"
-rand = "~0.8.5"
 jemallocator = "~0.5.4"
 
 [dev-dependencies]
