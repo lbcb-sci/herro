@@ -28,6 +28,7 @@ dependencies:
   - tk=8.6.13
   - wheel=0.41.3
   - xz=5.2.6
+  - minimap2=2.26
   - pip:
       - contourpy==1.2.0
       - cycler==0.12.1
