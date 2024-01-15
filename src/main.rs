@@ -76,7 +76,7 @@ struct InferenceArgs {
     #[arg(
         short = 't',
         default_value = "1",
-        help = "Number of feature generation threads (default 1)"
+        help = "Number of feature generation threads per device (default 1)"
     )]
     feat_gen_threads: usize,
 
@@ -91,7 +91,10 @@ struct InferenceArgs {
     )]
     devices: Vec<usize>,
 
-    #[arg(short = 'b', help = "Batch size per device.")]
+    #[arg(
+        short = 'b',
+        help = "Batch size per device. B=64 recommended for 40 GB GPU cards."
+    )]
     batch_size: usize,
 
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
@@ -102,8 +105,6 @@ struct InferenceArgs {
 }
 
 fn main() {
-    //let _profiler = dhat::Profiler::new_heap();
-
     let cli = Cli::parse();
 
     match cli.command {

@@ -3,11 +3,8 @@ use features::extract_features;
 
 use haec_io::HAECRecord;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget};
-
 use pbars::{
-    get_alns_batches_pbar, get_parse_reads_spinner, set_parse_reads_spinner_finish,
-    PBarNotification,
+    get_parse_reads_spinner, set_parse_reads_spinner_finish, track_progress, PBarNotification,
 };
 
 use std::{
@@ -37,6 +34,7 @@ mod windowing;
 pub(crate) const READS_BATCH_SIZE: usize = 100_000;
 pub(crate) const ALN_CHANNEL_CAPACITY: usize = 50_000;
 pub(crate) const LINE_ENDING: u8 = b'\n';
+pub(crate) const INFER_CHANNEL_CAP_FACTOR: usize = 2;
 
 pub enum AlnMode<V: AsRef<Path>> {
     None,
@@ -93,13 +91,7 @@ pub fn generate_features<T, U, V>(
 
         drop(pbar_sender);
 
-        let pbar = ProgressBar::new(reads.len() as u64);
-        while let Ok(notification) = pbar_receiver.recv() {
-            match notification {
-                PBarNotification::Inc => pbar.inc(1),
-                _ => unimplemented!(),
-            }
-        }
+        track_progress(pbar_receiver);
     });
 }
 
@@ -131,7 +123,7 @@ pub fn error_correction<T, U, V>(
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
-            let (infer_sender, infer_recv) = bounded(2 * threads);
+            let (infer_sender, infer_recv) = bounded(INFER_CHANNEL_CAP_FACTOR * threads);
             let (cons_sender, cons_recv) = unbounded();
             let writer_s = writer_sender.clone();
 
@@ -179,35 +171,7 @@ pub fn error_correction<T, U, V>(
 
         drop(writer_sender);
 
-        let mbar = MultiProgress::new();
-        let batches_bar = get_alns_batches_pbar(Some(&mbar));
-        let pbar = mbar.add(ProgressBar::hidden());
-
-        let mut batch_size = 0;
-        let mut n_batch = 1;
-        while let Ok(notification) = pbar_receiver.recv() {
-            match notification {
-                PBarNotification::BatchLen(l) => {
-                    batch_size = l;
-
-                    if n_batch == 0 {
-                        pbar.set_length(batch_size);
-                        pbar.set_draw_target(ProgressDrawTarget::stderr());
-                    }
-                }
-                PBarNotification::Inc => {
-                    if pbar.position() == pbar.length().unwrap() {
-                        n_batch += 1;
-                        batches_bar.set_message(format!("Processing {}/? batch", n_batch));
-
-                        pbar.set_length(batch_size);
-                        pbar.set_position(0);
-                    }
-
-                    pbar.inc(1);
-                }
-            }
-        }
+        track_progress(pbar_receiver);
     });
 }
 
@@ -253,11 +217,6 @@ fn correction_writer<U: AsRef<Path>>(
             }
         }
 
-        /*println!(
-            "Writer: in {}, out {}",
-            consensus_recv.len(),
-            pbar_sender.len()
-        );*/
         pbar_sender.send(PBarNotification::Inc).unwrap();
     }
 }
