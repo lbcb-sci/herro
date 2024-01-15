@@ -299,11 +299,11 @@ where
             .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
 
         let _tids: HashSet<_> = (0..n_targets)
-            .map(|_| {
+            .filter_map(|_| {
                 buf.clear();
                 let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
 
-                *name_to_id.get(&buf[..len - 1]).unwrap()
+                name_to_id.get(&buf[..len - 1]).copied()
             })
             .collect();
 
