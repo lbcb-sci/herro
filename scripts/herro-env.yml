@@ -1,4 +1,4 @@
-name: haec
+name: herro
 channels:
   - conda-forge
   - bioconda

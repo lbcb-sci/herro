@@ -1,6 +1,6 @@
 use clap::{Args, Parser, Subcommand};
 
-use ont_haec_rs::{error_correction, generate_features, AlnMode};
+use herro::{error_correction, generate_features, AlnMode};
 
 use jemallocator::Jemalloc;
 

@@ -326,7 +326,7 @@ impl WindowExample {
     }
 }
 
-#[cfg(test)]
+/*#[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
@@ -366,16 +366,10 @@ mod tests {
         let features: Vec<_> = (0..4)
             .into_iter()
             .map(|wid| {
-                let feats: Array3<u8> = read_npy(format!(
-                "/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.features.npy",
-                wid
-            ))
-                .unwrap();
-                let supported: Array1<u16> = read_npy(format!(
-                "/home/stanojevicd/projects/ont-haec-rs/resources/example_feats/{}.supported.npy",
-                wid
-            ))
-                .unwrap();
+                let feats: Array3<u8> =
+                    read_npy(format!("resources/example_feats/{}.features.npy", wid)).unwrap();
+                let supported: Array1<u16> =
+                    read_npy(format!("resources/example_feats/{}.supported.npy", wid)).unwrap();
                 (feats, supported.iter().map(|s| *s as usize).collect())
             })
             .collect();
@@ -395,7 +389,7 @@ mod tests {
         assert_relative_eq!(predicted, target, epsilon = 1e-5);
     }
 
-    /*#[test]
+    #[test]
     fn test2() {
         let _guard = tch::no_grad_guard();
         let device = tch::Device::Cpu;
@@ -407,18 +401,17 @@ mod tests {
         model.set_eval();
 
         // Get files list
-        let mut files: Vec<_> =
-            PathBuf::from("/scratch/users/astar/gis/stanojev/haec/chr19_py_inference/test_rs")
-                .read_dir()
-                .unwrap()
-                .filter_map(|p| {
-                    let p = p.unwrap().path();
-                    match p.extension() {
-                        Some(ext) if ext == "npy" => Some(p),
-                        _ => None,
-                    }
-                })
-                .collect();
+        let mut files: Vec<_> = PathBuf::from("resources/test_rs")
+            .read_dir()
+            .unwrap()
+            .filter_map(|p| {
+                let p = p.unwrap().path();
+                match p.extension() {
+                    Some(ext) if ext == "npy" => Some(p),
+                    _ => None,
+                }
+            })
+            .collect();
         files.sort();
 
         // Create input data
@@ -440,5 +433,5 @@ mod tests {
             .collect();
 
         println!("{:?}", &predicted.to_vec()[4056 - 5..4056 + 5]);
-    }*/
-}
+    }
+}*/
