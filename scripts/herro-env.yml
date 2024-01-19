@@ -1,4 +1,4 @@
-name: haec
+name: herro
 channels:
   - conda-forge
   - bioconda
@@ -19,7 +19,6 @@ dependencies:
   - ncurses=6.4
   - openssl=3.1.4
   - pip=23.3.1
-  - porechop=0.2.4
   - python=3.10.13
   - python_abi=3.10
   - readline=8.2
@@ -28,6 +27,7 @@ dependencies:
   - tk=8.6.13
   - wheel=0.41.3
   - xz=5.2.6
+  - minimap2=2.26
   - pip:
       - contourpy==1.2.0
       - cycler==0.12.1
@@ -59,3 +59,4 @@ dependencies:
       - tqdm==4.66.1
       - tzdata==2023.3
       - vbz-h5py-plugin==1.0.1
+      - git+https://github.com/dehui333/Porechop.git

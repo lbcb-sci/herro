@@ -3,7 +3,7 @@ use std::{ops::RangeBounds, path::Path};
 
 use needletail::parse_fastx_file;
 
-const BASE_ENCODING: [usize; 128] = [
+const BASE_ENCODING: [u64; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -43,7 +43,7 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
             continue;
         }
 
-        let mut split = record.id().splitn(2, |c| *c == b' ');
+        let mut split = record.id().splitn(2, |c| *c == b' ' || *c == b'\t');
         let id = split.next().expect("Invalid read id.").to_owned();
         let description = split.next().map(|d| d.to_owned());
 
@@ -56,17 +56,18 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
         reads.push(HAECRecord::new(id, description, seq, qual));
     }
 
+    reads.shrink_to_fit();
     reads
 }
 
 #[derive(PartialEq, Debug)]
 pub struct HAECSeq {
-    data: Vec<usize>,
+    data: Vec<u64>,
     length: usize,
 }
 
 impl HAECSeq {
-    pub fn new(data: Vec<usize>, length: usize) -> Self {
+    pub fn new(data: Vec<u64>, length: usize) -> Self {
         HAECSeq { data, length }
     }
 
@@ -103,8 +104,8 @@ impl From<&HAECSeq> for Vec<u8> {
     }
 }
 
-fn encode(sequence: &[u8]) -> (Vec<usize>, usize) {
-    let mut data = Vec::with_capacity((sequence.len() + 3) / 4);
+fn encode(sequence: &[u8]) -> (Vec<u64>, usize) {
+    let mut data = Vec::with_capacity((sequence.len() + 31) / 32);
     let mut block = 0;
 
     for (i, b) in sequence.iter().enumerate() {
@@ -121,7 +122,7 @@ fn encode(sequence: &[u8]) -> (Vec<usize>, usize) {
 }
 
 fn decode<R: RangeBounds<usize>>(
-    sequence: &[usize],
+    sequence: &[u64],
     length: usize,
     range: R,
     is_reversed: bool,
@@ -155,7 +156,7 @@ fn decode<R: RangeBounds<usize>>(
         }
 
         let code = ((sequence[i >> 5] >> ((i << 1) & 63)) & 3) ^ rc_mask;
-        buffer[idx] = BASE_DECODING[code];
+        buffer[idx] = BASE_DECODING[code as usize];
     });
 }
 

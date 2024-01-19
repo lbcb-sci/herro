@@ -3,7 +3,7 @@ From: nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04
 Stage: devel
 
 %files
-    * /ont-haec-rs/
+    * /herro/
 
 %post
     # Get essential packages
@@ -24,9 +24,9 @@ Stage: devel
     export LIBTORCH=/libtorch
     export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
 
-    # Get ont-haec-rs and build
-    # git clone -b mm2 https://github.com/dominikstanojevic/ont-haec-rs.git ont-haec-rs
-    cd ont-haec-rs && RUSTFLAGS="-Ctarget-cpu=native" cargo build -q --release
+    # build
+    cd herro
+    RUSTFLAGS="-Ctarget-cpu=native" cargo build -q --release
 
 
 Bootstrap: docker
@@ -35,7 +35,7 @@ Stage: final
 
 %files from devel
     /minimap2/minimap2 /bin/minimap2
-    /ont-haec-rs/target/release/ont-haec-rs /bin/ont-haec-rs
+    /herro/target/release/herro /bin/herro
     /libtorch /libs/
 
 %environment
@@ -48,9 +48,9 @@ Stage: final
     apt-get install -y libgomp1 zlib1g-dev zstd
 
 %runscript
-    ont-haec-rs "$@"
+    herro "$@"
 
 %labels
     Author Dominik Stanojevic
     Version v0.0.1
-    Name ont-haec
+    Name herro

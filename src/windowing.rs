@@ -1,23 +1,23 @@
-use std::rc::Rc;
-
 use crate::{aligners::CigarOp, overlaps::Overlap};
 
 #[derive(Clone, Debug)]
-pub struct OverlapWindow {
-    pub overlap: Rc<Overlap>,
+pub struct OverlapWindow<'a> {
+    pub overlap: &'a Overlap,
     pub tstart: u32,
     pub qstart: u32,
+    pub qend: u32,
     pub cigar_start_idx: usize,
     pub cigar_start_offset: u32,
     pub cigar_end_idx: usize,
     pub cigar_end_offset: u32,
 }
 
-impl OverlapWindow {
+impl<'a> OverlapWindow<'a> {
     pub fn new(
-        overlap: Rc<Overlap>,
+        overlap: &'a Overlap,
         tstart: u32,
         qstart: u32,
+        qend: u32,
         cigar_start_idx: usize,
         cigar_start_offset: u32,
         cigar_end_idx: usize,
@@ -27,6 +27,7 @@ impl OverlapWindow {
             overlap,
             tstart,
             qstart,
+            qend,
             cigar_start_idx,
             cigar_start_offset,
             cigar_end_idx,
@@ -35,11 +36,11 @@ impl OverlapWindow {
     }
 }
 
-type Windows<'a> = Vec<Vec<OverlapWindow>>;
+type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 
-pub(crate) fn extract_windows(
-    windows: &mut Windows,
-    overlap: Rc<Overlap>,
+pub(crate) fn extract_windows<'a>(
+    windows: &mut Windows<'a>,
+    overlap: &'a Overlap,
     cigar: &[CigarOp],
     tshift: u32,
     qshift: u32,
@@ -146,12 +147,19 @@ pub(crate) fn extract_windows(
         for i in 1..diff_w {
             let offset = (current_w + i) * window_size - tpos;
 
+            let q_start_new = if let CigarOp::Match(_) | CigarOp::Mismatch(_) = op {
+                qpos + offset
+            } else {
+                qpos
+            };
+
             // If there was full window -> emit it, else label start
             if cigar_start_idx.is_some() {
                 windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
-                    Rc::clone(&overlap),
+                    overlap,
                     t_window_start.unwrap(),
                     q_window_start.unwrap(),
+                    q_start_new,
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
                     cigar_idx,
@@ -210,9 +218,10 @@ pub(crate) fn extract_windows(
 
         if cigar_start_idx.is_some() {
             windows[new_w as usize - 1].push(OverlapWindow::new(
-                Rc::clone(&overlap),
+                overlap,
                 t_window_start.unwrap(),
                 q_window_start.unwrap(),
+                qend,
                 cigar_start_idx.unwrap(),
                 cigar_start_offset.unwrap(),
                 cigar_end_idx,
@@ -237,9 +246,10 @@ pub(crate) fn extract_windows(
     // End of the target, emitted already for tlen % W = 0
     if tpos > nth_window_thresh && tpos % window_size != 0 {
         windows[last_window as usize - 1].push(OverlapWindow::new(
-            Rc::clone(&overlap),
+            overlap,
             t_window_start.unwrap(),
             q_window_start.unwrap(),
+            qpos,
             cigar_start_idx.unwrap(),
             cigar_start_offset.unwrap(),
             cigar.len(),

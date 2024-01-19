@@ -1,42 +1,40 @@
-use crossbeam_channel::bounded;
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use features::extract_features;
 
-use glob::glob;
 use haec_io::HAECRecord;
-use indicatif::ParallelProgressIterator;
 
-use overlaps::{parse_paf, Alignment};
-use rand::{rngs::StdRng, seq::SliceRandom, SeedableRng};
-use rayon::prelude::{IntoParallelIterator, ParallelIterator};
-use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
-use thread_local::ThreadLocal;
-use zstd::Encoder;
+use pbars::{
+    get_parse_reads_spinner, set_parse_reads_spinner_finish, track_progress, PBarNotification,
+};
 
 use std::{
-    cell::RefCell,
-    fs::{create_dir_all, File},
-    io::{prelude::*, BufRead, BufReader, BufWriter},
+    fs::File,
+    io::{prelude::*, BufWriter},
     path::Path,
-    sync::{Arc, RwLock},
     thread::{self},
 };
 
 use crate::{
+    consensus::consensus_worker,
     features::{FeatsGenOutput, InferenceOutput},
-    inference::{consensus_worker, inference_worker},
+    inference::inference_worker,
+    overlaps::alignment_reader,
 };
 
 mod aligners;
+mod consensus;
 mod features;
 mod haec_io;
 mod inference;
 mod mm2;
 mod overlaps;
+mod pbars;
 mod windowing;
 
-pub type ReadOverlaps = Vec<Arc<RwLock<Alignment>>>;
-const READS_BATCH_SIZE: usize = 100_000;
+pub(crate) const READS_BATCH_SIZE: usize = 100_000;
+pub(crate) const ALN_CHANNEL_CAPACITY: usize = 50_000;
 pub(crate) const LINE_ENDING: u8 = b'\n';
+pub(crate) const INFER_CHANNEL_CAP_FACTOR: usize = 2;
 
 pub enum AlnMode<V: AsRef<Path>> {
     None,
@@ -51,85 +49,50 @@ pub fn generate_features<T, U, V>(
     window_size: u32,
     aln_mode: AlnMode<V>,
 ) where
-    T: AsRef<Path>,
+    T: AsRef<Path> + Send + Sync,
     U: AsRef<Path> + Send + Sync + Clone,
-    V: AsRef<Path>,
+    V: AsRef<Path> + Send,
 {
     // Get fastq reads
-    let reads = haec_io::get_reads(&reads_path, window_size);
+    let reads = parse_reads(&reads_path, window_size);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    let name_to_id: HashMap<_, _> = reads
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (&*e.id, i as u32))
-        .collect();
-    eprintln!("Parsed {} reads.", reads.len());
 
-    let sequences = Arc::new(ThreadLocal::new());
-    let fo_tl = Arc::new(ThreadLocal::new());
-    let feats_output = FeatsGenOutput::new(output_path);
+    let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
+    let (pbar_sender, pbar_receiver) = unbounded();
+    thread::scope(|s| {
+        let pbar_s = pbar_sender.clone();
+        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
 
-    rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build_global()
-        .unwrap();
+        for _ in 0..threads {
+            let pbar_s = pbar_sender.clone();
 
-    let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
-        AlnMode::None => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, threads, None::<T>);
-            Box::new(batches)
-        }
-        AlnMode::Read(path) => {
-            let batches = read_batches(&name_to_id, path);
-            Box::new(batches)
-        }
-        AlnMode::Write(path) => {
-            let batches = generate_batches(&reads, &name_to_id, &reads_path, threads, Some(path));
-            Box::new(batches)
-        }
-    };
+            s.spawn(|| {
+                let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
+                let mut tbuf = vec![0; max_len];
+                let mut qbuf = vec![0; max_len];
 
-    for (tids, alignments) in batches {
-        let mut read_to_alns = HashMap::default();
-        alignments.iter().for_each(|aln| {
-            if tids.contains(&aln.overlap.tid) {
-                read_to_alns
-                    .entry(aln.overlap.tid)
-                    .or_insert_with(|| Vec::new())
-                    .push(aln);
-            }
+                loop {
+                    let (rid, alns) = match alns_receiver.recv() {
+                        Ok(out) => out,
+                        Err(_) => break,
+                    };
 
-            /*if tids.contains(&aln.overlap.qid) {
-                read_to_alns
-                    .entry(aln.overlap.qid)
-                    .or_insert_with(|| Vec::new())
-                    .push(aln);
-            }*/
-        });
-
-        let n_targets = read_to_alns.len();
-        read_to_alns
-            .into_par_iter()
-            .progress_count(n_targets as u64)
-            .for_each(|(rid, alns)| {
-                let (target, query) = sequences.get_or(|| {
-                    (
-                        RefCell::new(vec![0u8; max_len]),
-                        RefCell::new(vec![0u8; max_len]),
-                    )
-                });
-                let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
-
-                extract_features(
-                    rid,
-                    &reads,
-                    &alns,
-                    window_size,
-                    (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                    &mut *fo.borrow_mut(),
-                )
+                    extract_features(
+                        rid,
+                        &reads,
+                        alns,
+                        window_size,
+                        (&mut tbuf, &mut qbuf),
+                        &mut feats_output,
+                    );
+                }
             });
-    }
+        }
+
+        drop(pbar_sender);
+
+        track_progress(pbar_receiver);
+    });
 }
 
 pub fn error_correction<T, U, V>(
@@ -138,239 +101,122 @@ pub fn error_correction<T, U, V>(
     output_path: U,
     threads: usize,
     window_size: u32,
-    devices: &[usize],
+    devices: Vec<usize>,
     batch_size: usize,
     aln_mode: AlnMode<V>,
 ) where
-    T: AsRef<Path>,
+    T: AsRef<Path> + Send + Sync,
     U: AsRef<Path> + Send + Sync,
-    V: AsRef<Path>,
+    V: AsRef<Path> + Send,
 {
-    tch::maybe_init_cuda();
+    tch::set_num_threads(1);
 
-    // Get fastq reads
-    let mut reads = haec_io::get_reads(&reads_path, window_size);
-    let mut rng = StdRng::seed_from_u64(42);
-    reads.shuffle(&mut rng);
-
+    let reads = parse_reads(&reads_path, window_size);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
-    let name_to_id: HashMap<_, _> = reads
-        .iter()
-        .enumerate()
-        .map(|(i, e)| (&*e.id, i as u32))
-        .collect();
-    eprintln!("Parsed {} reads.", reads.len());
 
-    let (feats_sender, feats_receiver) = bounded(1000);
-    let (pred_sender, pred_receiver) = bounded(1000);
-    let (consensus_sender, consesus_receiver) = bounded(1000);
-
-    let sequences = Arc::new(ThreadLocal::new());
-    let fo_tl = Arc::new(ThreadLocal::new());
-    let feats_output = InferenceOutput::new(feats_sender, batch_size);
-
+    let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
+    let (writer_sender, writer_receiver) = unbounded();
+    let (pbar_sender, pbar_receiver) = unbounded();
     thread::scope(|s| {
-        // Create inference thread for every GPU
-        devices.iter().for_each(|d| {
-            let fr = feats_receiver.clone();
-            let ps = pred_sender.clone();
-            s.spawn(|| inference_worker(model_path, tch::Device::Cuda(*d), fr, ps));
+        let pbar_s = pbar_sender.clone();
+        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
+        s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
-            let pr = pred_receiver.clone();
-            let cs = consensus_sender.clone();
-            s.spawn(|| consensus_worker(&reads, pr, cs, window_size));
-        });
+        for device in devices {
+            let (infer_sender, infer_recv) = bounded(INFER_CHANNEL_CAP_FACTOR * threads);
+            let (cons_sender, cons_recv) = unbounded();
+            let writer_s = writer_sender.clone();
 
-        // Drop the handles so that the inference threads can exit
-        drop(feats_receiver);
-        drop(pred_sender);
+            for _ in 0..threads {
+                let alns_r = alns_receiver.clone();
+                let infer_s = infer_sender.clone();
 
-        // Drop the handles so that the consensus threads can exit
-        drop(pred_receiver);
-        drop(consensus_sender);
+                let ref_reads = &reads;
+                s.spawn(move || {
+                    let _guard = tch::no_grad_guard();
 
-        // Create writer thread
-        let reads_ref = &reads;
-        s.spawn(move || {
-            let file = File::create(output_path).unwrap();
-            let mut writer = BufWriter::new(file);
+                    let mut feats_output = InferenceOutput::new(infer_s, batch_size);
+                    let mut tbuf = vec![0; max_len];
+                    let mut qbuf = vec![0; max_len];
 
-            loop {
-                let (rid, seqs) = match consesus_receiver.recv() {
-                    Ok(out) => out,
-                    Err(_) => break,
-                };
+                    loop {
+                        let (rid, alns) = match alns_r.recv() {
+                            Ok(out) => out,
+                            Err(_) => break,
+                        };
 
-                if seqs.len() == 1 {
-                    write!(&mut writer, ">").unwrap();
-                    writer.write_all(&reads_ref[rid].id).unwrap();
-                    write!(&mut writer, "\n").unwrap();
-
-                    writer.write_all(&seqs[0]).unwrap();
-                    write!(&mut writer, "\n").unwrap();
-                } else {
-                    for (i, seq) in seqs.into_iter().enumerate() {
-                        write!(&mut writer, ">").unwrap();
-                        writer.write_all(&reads_ref[rid].id).unwrap();
-                        write!(&mut writer, "_{}\n", i).unwrap();
-
-                        writer.write_all(&seq).unwrap();
-                        write!(&mut writer, "\n").unwrap();
+                        extract_features(
+                            rid,
+                            ref_reads,
+                            alns,
+                            window_size,
+                            (&mut tbuf, &mut qbuf),
+                            &mut feats_output,
+                        );
                     }
-                }
+                });
             }
-        });
 
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(threads)
-            .build_global()
-            .unwrap();
-
-        let batches: Box<dyn Iterator<Item = (HashSet<u32>, Vec<Alignment>)>> = match aln_mode {
-            AlnMode::None => {
-                let batches =
-                    generate_batches(&reads, &name_to_id, &reads_path, threads, None::<T>);
-                Box::new(batches)
-            }
-            AlnMode::Read(path) => {
-                let batches = read_batches(&name_to_id, path);
-                Box::new(batches)
-            }
-            AlnMode::Write(path) => {
-                let batches =
-                    generate_batches(&reads, &name_to_id, &reads_path, threads, Some(path));
-                Box::new(batches)
-            }
-        };
-
-        for (tids, alignments) in batches {
-            let mut read_to_alns = HashMap::default();
-            alignments.iter().for_each(|aln| {
-                if tids.contains(&aln.overlap.tid) {
-                    read_to_alns
-                        .entry(aln.overlap.tid)
-                        .or_insert_with(|| Vec::new())
-                        .push(aln);
-                }
-
-                /*if tids.contains(&aln.overlap.qid) {
-                    read_to_alns
-                        .entry(aln.overlap.qid)
-                        .or_insert_with(|| Vec::new())
-                        .push(aln);
-                }*/
+            s.spawn(move || {
+                inference_worker(
+                    model_path,
+                    tch::Device::Cuda(device),
+                    infer_recv,
+                    cons_sender,
+                )
             });
 
-            let batch_size = read_to_alns.len();
-            read_to_alns
-                .into_par_iter()
-                .progress_count(batch_size as u64)
-                .for_each(|(rid, alns)| {
-                    let (target, query) = sequences.get_or(|| {
-                        (
-                            RefCell::new(vec![0u8; max_len]),
-                            RefCell::new(vec![0u8; max_len]),
-                        )
-                    });
-                    let fo = fo_tl.get_or(|| RefCell::new(feats_output.clone()));
-
-                    extract_features(
-                        rid,
-                        &reads,
-                        &alns,
-                        window_size,
-                        (&mut target.borrow_mut(), &mut query.borrow_mut()),
-                        &mut *fo.borrow_mut(),
-                    )
-                });
+            s.spawn(move || consensus_worker(cons_recv, writer_s));
         }
 
-        drop(fo_tl);
-        drop(feats_output);
+        drop(writer_sender);
+
+        track_progress(pbar_receiver);
     });
 }
 
-fn generate_batches<'a, P, T>(
-    reads: &'a [HAECRecord],
-    name_to_id: &'a HashMap<&[u8], u32>,
-    reads_path: P,
-    threads: usize,
-    alns_path: Option<T>,
-) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
-where
-    P: AsRef<Path>,
-    P: 'a,
-    T: AsRef<Path> + 'a,
-{
-    if let Some(ref ap) = alns_path {
-        create_dir_all(ap).unwrap();
-    }
+fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32) -> Vec<HAECRecord> {
+    // Get fastq reads
+    let spinner = get_parse_reads_spinner(None);
+    let reads = haec_io::get_reads(&reads_path, window_size);
+    set_parse_reads_spinner_finish(reads.len(), spinner);
 
     reads
-        .chunks(READS_BATCH_SIZE)
-        .enumerate()
-        .map(move |(batch_idx, batch)| {
-            let mm2_out = BufReader::new(mm2::call_mm2(batch, &reads_path, threads));
-
-            let tids: HashSet<_> = batch
-                .iter()
-                .map(|r| *name_to_id.get(&*r.id).unwrap())
-                .collect();
-
-            let mut writer = alns_path.as_ref().map(|ap| {
-                let batch_path = ap.as_ref().join(format!("{batch_idx}.oec.zst"));
-                let file = File::create(batch_path).unwrap();
-                let mut w = Encoder::new(BufWriter::new(file), 0).unwrap().auto_finish();
-
-                // Write header
-                writeln!(&mut w, "{}", batch.len()).unwrap();
-                batch.iter().for_each(|r| {
-                    writeln!(&mut w, "{}", std::str::from_utf8(&r.id).unwrap()).unwrap()
-                });
-
-                w
-            });
-
-            let alignments = overlaps::parse_paf(mm2_out, &name_to_id, writer.as_mut());
-
-            (tids, alignments)
-        })
 }
 
-fn read_batches<'a, P>(
-    name_to_id: &'a HashMap<&[u8], u32>,
-    batches: P,
-) -> impl Iterator<Item = (HashSet<u32>, Vec<Alignment>)> + 'a
-where
-    P: AsRef<Path>,
-    P: 'a,
-{
-    let g = batches.as_ref().join("*.oec.zst");
-    glob(g.to_str().unwrap()).unwrap().map(|p| {
-        let mut reader = {
-            let file = File::open(p.unwrap()).unwrap();
-            let reader = zstd::Decoder::new(file).unwrap();
-            BufReader::new(reader)
+fn correction_writer<U: AsRef<Path>>(
+    reads: &[HAECRecord],
+    output_path: U,
+    consensus_recv: Receiver<(usize, Vec<Vec<u8>>)>,
+    pbar_sender: Sender<PBarNotification>,
+) {
+    let file = File::create(output_path).unwrap();
+    let mut writer = BufWriter::new(file);
+
+    loop {
+        let (rid, seqs) = match consensus_recv.recv() {
+            Ok(out) => out,
+            Err(_) => break,
         };
 
-        // Read number of target reads
-        let mut buf = Vec::new();
-        let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
-        let n_targets = buf[..len - 1]
-            .iter()
-            .fold(0, |acc, &d| acc * 10 + (d - b'0') as u32);
+        if seqs.len() == 1 {
+            write!(&mut writer, ">").unwrap();
+            writer.write_all(&reads[rid].id).unwrap();
+            write!(&mut writer, "\n").unwrap();
 
-        let tids: HashSet<_> = (0..n_targets)
-            .map(|_| {
-                buf.clear();
-                let len = reader.read_until(LINE_ENDING, &mut buf).unwrap();
+            writer.write_all(&seqs[0]).unwrap();
+            write!(&mut writer, "\n").unwrap();
+        } else {
+            for (i, seq) in seqs.into_iter().enumerate() {
+                write!(&mut writer, ">").unwrap();
+                writer.write_all(&reads[rid].id).unwrap();
+                write!(&mut writer, ":{}\n", i).unwrap();
 
-                *name_to_id.get(&buf[..len - 1]).unwrap()
-            })
-            .collect();
+                writer.write_all(&seq).unwrap();
+                write!(&mut writer, "\n").unwrap();
+            }
+        }
 
-        let alignments = parse_paf(&mut reader, name_to_id, None);
-
-        (tids, alignments)
-    })
+        pbar_sender.send(PBarNotification::Inc).unwrap();
+    }
 }

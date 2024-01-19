@@ -67,59 +67,7 @@ pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
 
-/*pub fn align_overlaps(
-    overlaps: &[Arc<RwLock<Alignment>>],
-    reads: &[HAECRecord],
-    aligner: &mut WFAAligner,
-    (tbuf, qbuf): (&mut [u8], &mut [u8]),
-) {
-    overlaps.iter().for_each(|overlap| {
-        let mut aln = overlap.write().unwrap();
-        if !matches!(aln.cigar, CigarStatus::Unprocessed) {
-            return;
-        }
-
-        let qlen = aln.overlap.qend as usize - aln.overlap.qstart as usize;
-        if aln.overlap.strand == overlaps::Strand::Forward {
-            reads[aln.overlap.qid as usize]
-                .seq
-                .get_subseq(aln.overlap.qstart as usize..aln.overlap.qend as usize, qbuf);
-        } else {
-            reads[aln.overlap.qid as usize]
-                .seq
-                .get_rc_subseq(aln.overlap.qstart as usize..aln.overlap.qend as usize, qbuf);
-        };
-
-        let tlen = aln.overlap.tend as usize - aln.overlap.tstart as usize;
-        reads[aln.overlap.tid as usize]
-            .seq
-            .get_subseq(aln.overlap.tstart as usize..aln.overlap.tend as usize, tbuf);
-
-        let align_result = aligner.align(&qbuf[..qlen], &tbuf[..tlen]);
-        if let Some(result) = align_result {
-            aln.cigar = CigarStatus::Mapped(result.cigar);
-
-            aln.overlap.tstart += result.tstart;
-            aln.overlap.tend -= result.tend;
-
-            match aln.overlap.strand {
-                overlaps::Strand::Forward => {
-                    aln.overlap.qstart += result.qstart;
-                    aln.overlap.qend -= result.qend;
-                }
-                overlaps::Strand::Reverse => {
-                    aln.overlap.qstart += result.qend;
-                    aln.overlap.qend -= result.qstart;
-                }
-            }
-        } else {
-            aln.cigar = CigarStatus::Unmapped;
-            return;
-        }
-    })
-}*/
-
-pub(crate) fn calculate_accuracy(cigar: &[CigarOp], tseq: &[u8], qseq: &[u8]) -> f32 {
+pub(crate) fn calculate_accuracy(cigar: &[CigarOp]) -> f32 {
     let (mut matches, mut subs, mut ins, mut dels) = (0u32, 0u32, 0u32, 0u32);
     for op in cigar {
         match op {
