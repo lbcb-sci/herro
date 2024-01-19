@@ -19,7 +19,6 @@ dependencies:
   - ncurses=6.4
   - openssl=3.1.4
   - pip=23.3.1
-  - porechop=0.2.4
   - python=3.10.13
   - python_abi=3.10
   - readline=8.2
@@ -60,3 +59,4 @@ dependencies:
       - tqdm==4.66.1
       - tzdata==2023.3
       - vbz-h5py-plugin==1.0.1
+      - git+https://github.com/dehui333/Porechop.git
