@@ -43,7 +43,7 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
             continue;
         }
 
-        let mut split = record.id().splitn(2, |c| *c == b' ');
+        let mut split = record.id().splitn(2, |c| *c == b' ' || *c == b'\t');
         let id = split.next().expect("Invalid read id.").to_owned();
         let description = split.next().map(|d| d.to_owned());
 
