@@ -44,7 +44,7 @@ conda env create --file scripts/herro-env.yml
     sudo singularity build herro.sif herro-singularity.def
     ```
     
-    Run the tool (see [Usage](#usage)) with: ```singularity run --nv herro.sif inference <args>```
+    Run the tool (see [Usage](#usage)) with: ```singularity run --nv --bind <host_path>:<dest_path> herro.sif inference <args>```
 
     c. Compile
     
