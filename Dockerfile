@@ -38,17 +38,14 @@ COPY --from=devel /minimap2/minimap2 /bin/minimap2
 COPY --from=devel /herro/target/release/herro /bin/herro
 COPY --from=devel /libtorch /libs/
 
-# Set environment variables
-ENV LIBTORCH=/libs/libtorch
-ENV LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
-
 # Install additional packages
 RUN apt-get update \
     && apt-get install -y libgomp1 zlib1g-dev zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Define the runscript
-CMD ["herro"]
+# Set environment variables
+ENV LIBTORCH=/libs
+ENV LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
 
 # Labels
 LABEL Author="Dominik Stanojevic"
