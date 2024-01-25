@@ -7,12 +7,8 @@ use pbars::{
     get_parse_reads_spinner, set_parse_reads_spinner_finish, track_progress, PBarNotification,
 };
 
-use std::{
-    fs::File,
-    io::{prelude::*, BufWriter},
-    path::Path,
-    thread::{self},
-};
+use std::{fs::File, io::{prelude::*, BufWriter}, io, path::Path, thread::{self}};
+use rustc_hash::FxHashSet;
 
 use crate::{
     consensus::consensus_worker,
@@ -54,14 +50,14 @@ pub fn generate_features<T, U, V>(
     V: AsRef<Path> + Send,
 {
     // Get fastq reads
-    let reads = parse_reads(&reads_path, window_size);
+    let reads = parse_reads(&reads_path, window_size, &None, &None);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
     let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
     let (pbar_sender, pbar_receiver) = unbounded();
     thread::scope(|s| {
         let pbar_s = pbar_sender.clone();
-        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
+        s.spawn(|| alignment_reader(&reads, &reads_path, &None, aln_mode, threads, alns_sender, pbar_s));
 
         for _ in 0..threads {
             let pbar_s = pbar_sender.clone();
@@ -99,6 +95,7 @@ pub fn error_correction<T, U, V>(
     reads_path: T,
     model_path: &str,
     output_path: U,
+    cluster_path: &str,
     threads: usize,
     window_size: u32,
     devices: Vec<usize>,
@@ -111,7 +108,31 @@ pub fn error_correction<T, U, V>(
 {
     tch::set_num_threads(1);
 
-    let reads = parse_reads(&reads_path, window_size);
+    let (core, neighbour) = if !cluster_path.is_empty() {
+        let file = match File::open(&cluster_path) {
+            Ok(file) => file,
+            Err(_) => panic!("Failed to open file: {:?}", cluster_path),
+        };
+        let reader = io::BufReader::new(file);
+        let mut core: FxHashSet<String> = FxHashSet::default();
+        let mut neighbour: FxHashSet<String> = FxHashSet::default();
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => panic!("Failed to read line: {:?}", line),
+            };
+            let fields: Vec<_> = line.split('\t').collect();
+            match fields[0] {
+                "0" => { core.insert(fields[1].to_owned()); }
+                "1" => { neighbour.insert(fields[1].to_owned()); }
+                _ => { panic!("Invalid cluster file"); }
+            }
+        }
+        (Some(core), Some(neighbour))
+    } else {
+        (None, None)
+    };
+    let reads = parse_reads(&reads_path, window_size, &core, &neighbour);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
     let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
@@ -119,7 +140,7 @@ pub fn error_correction<T, U, V>(
     let (pbar_sender, pbar_receiver) = unbounded();
     thread::scope(|s| {
         let pbar_s = pbar_sender.clone();
-        s.spawn(|| alignment_reader(&reads, &reads_path, aln_mode, threads, alns_sender, pbar_s));
+        s.spawn(|| alignment_reader(&reads, &reads_path, &core, aln_mode, threads, alns_sender, pbar_s));
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
@@ -175,10 +196,10 @@ pub fn error_correction<T, U, V>(
     });
 }
 
-fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32) -> Vec<HAECRecord> {
+fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
     // Get fastq reads
     let spinner = get_parse_reads_spinner(None);
-    let reads = haec_io::get_reads(&reads_path, window_size);
+    let reads = haec_io::get_reads(&reads_path, window_size, core, neighbour);
     set_parse_reads_spinner_finish(reads.len(), spinner);
 
     reads

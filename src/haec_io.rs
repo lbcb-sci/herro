@@ -2,6 +2,7 @@ use core::panic;
 use std::{ops::RangeBounds, path::Path};
 
 use needletail::parse_fastx_file;
+use rustc_hash::FxHashSet;
 
 const BASE_ENCODING: [u64; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -33,7 +34,7 @@ impl HAECRecord {
     }
 }
 
-pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
+pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
     let mut reader = parse_fastx_file(path).expect("Cannot open file containing reads.");
 
     let mut reads = Vec::new();
@@ -52,6 +53,12 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32) -> Vec<HAECRecord> {
             .qual()
             .expect("Qualities should be present.")
             .to_owned();
+
+        if let (Some(core), Some(neighbour)) = (&core, &neighbour) {
+            if !neighbour.contains(std::str::from_utf8(&id).unwrap()) && !core.contains(std::str::from_utf8(&id).unwrap()) {
+                continue;
+            }
+        }
 
         reads.push(HAECRecord::new(id, description, seq, qual));
     }
