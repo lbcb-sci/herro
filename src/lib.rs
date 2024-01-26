@@ -8,6 +8,8 @@ use pbars::{
 };
 
 use std::{fs::File, io::{prelude::*, BufWriter}, io, path::Path, thread::{self}};
+use std::fs::metadata;
+use glob::glob;
 use rustc_hash::FxHashSet;
 
 use crate::{
@@ -199,10 +201,20 @@ pub fn error_correction<T, U, V>(
 fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
     // Get fastq reads
     let spinner = get_parse_reads_spinner(None);
-    let reads = haec_io::get_reads(&reads_path, window_size, core, neighbour);
-    set_parse_reads_spinner_finish(reads.len(), spinner);
-
-    reads
+    let md = metadata(reads_path).unwrap();
+    if md.is_file() {
+        let reads = haec_io::get_reads(&reads_path, window_size, core, neighbour);
+        set_parse_reads_spinner_finish(reads.len(), spinner);
+        reads
+    } else {
+        let g = reads_path.as_ref().join("*").to_str().unwrap();
+        let reads : Vec<_> = glob(g).unwrap()
+            .filter(|p| p.unwrap().ends_with(".fastq") || p.unwrap().ends_with(".fastq.gz"))
+            .flat_map(|p| haec_io::get_reads(p.unwrap(), window_size, core, neighbour))
+            .collect();
+        set_parse_reads_spinner_finish(reads.len(), spinner);
+        reads
+    }
 }
 
 fn correction_writer<U: AsRef<Path>>(
