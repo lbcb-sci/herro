@@ -107,8 +107,11 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
             continue;
         }*/
         if window.n_alns < 2 {
-            corrected_seqs.push(corrected);
-            corrected = Vec::new();
+            if corrected.len() > 0 {
+                corrected_seqs.push(corrected);
+                corrected = Vec::new();
+            }
+
             continue;
         }
 
@@ -213,7 +216,10 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
         }
     }
 
-    corrected_seqs.push(corrected);
+    if corrected.len() > 0 {
+        corrected_seqs.push(corrected);
+    }
+
     Some(corrected_seqs)
 }
 
