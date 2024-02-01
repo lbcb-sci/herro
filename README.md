@@ -31,11 +31,9 @@ conda env create --file scripts/herro-env.yml
 
     a. Download singularity image:
     
-    1. Setup aws profile using [these](https://pastebin.com/raw/9ssiEAmA) credentials. A guide for aws-cli profile setup can be found [here](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html#cli-configure-files-methods).
-
-    2. Download the image
+    1. Download the image
     ```shell
-    aws s3 cp s3://herro.store.genome.sg/sif/herro.sif herro.sif --profile <herro_profile>
+    wget http://complex.zesoi.fer.hr/data/downloads/herro.sif
     ```
     
 
@@ -59,11 +57,9 @@ conda env create --file scripts/herro-env.yml
 
 ## Model Download
 
-  1. Setup aws profile using [these](https://pastebin.com/raw/9ssiEAmA) credentials. A guide for aws-cli profile setup can be found [here](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html#cli-configure-files-methods).
-
-  2. Download model:
+  1. Download model:
   ```shell
-  aws s3 cp s3://herro.store.genome.sg/models/model_v0.1.pt . --profile <herro_profile>
+  wget http://complex.zesoi.fer.hr/data/downloads/model_v0.1.pt
   ```
 
 
@@ -117,11 +113,9 @@ Experimental high-accuracy, UL HG002 error-corrected reads can be found in the s
 Raw data used for the error-correction can be found [here](https://labs.epi2me.io/gm24385_ncm23_preview/). Assemblies were done in the same way as in the previous section.
 
 ### Download
-  1. Setup aws profile using [these](https://pastebin.com/raw/9ssiEAmA) credentials. A guide for aws-cli profile setup can be found [here](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html#cli-configure-files-methods).
-
-  2. Download error-corrected reads:
+  1. Download error-corrected reads:
   ```shell
-  aws s3 cp s3://herro.store.genome.sg/data/corrected/HG002.experimentalUL.corrected.fasta.gz . --profile <herro_profile>
+  wget http://complex.zesoi.fer.hr/data/downloads/HG002.experimentalUL.corrected.fasta.gz
   ```
 
 ### Results
