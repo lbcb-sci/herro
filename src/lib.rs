@@ -110,30 +110,7 @@ pub fn error_correction<T, U, V>(
 {
     tch::set_num_threads(1);
 
-    let (core, neighbour) = if !cluster_path.is_empty() {
-        let file = match File::open(&cluster_path) {
-            Ok(file) => file,
-            Err(_) => panic!("Failed to open file: {:?}", cluster_path),
-        };
-        let reader = io::BufReader::new(file);
-        let mut core: FxHashSet<String> = FxHashSet::default();
-        let mut neighbour: FxHashSet<String> = FxHashSet::default();
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
-                Err(_) => panic!("Failed to read line: {:?}", line),
-            };
-            let fields: Vec<_> = line.split('\t').collect();
-            match fields[0] {
-                "0" => { core.insert(fields[1].to_owned()); }
-                "1" => { neighbour.insert(fields[1].to_owned()); }
-                _ => { panic!("Invalid cluster file"); }
-            }
-        }
-        (Some(core), Some(neighbour))
-    } else {
-        (None, None)
-    };
+    let (core, neighbour) = read_cluster(&cluster_path);
     let reads = parse_reads(&reads_path, window_size, &core, &neighbour);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
@@ -196,6 +173,33 @@ pub fn error_correction<T, U, V>(
 
         track_progress(pbar_receiver);
     });
+}
+
+fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHashSet<String>>) {
+    if !cluster_path.is_empty() {
+        let file = match File::open(&cluster_path) {
+            Ok(file) => file,
+            Err(_) => panic!("Failed to open file: {:?}", cluster_path),
+        };
+        let reader = io::BufReader::new(file);
+        let mut core: FxHashSet<String> = FxHashSet::default();
+        let mut neighbour: FxHashSet<String> = FxHashSet::default();
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => panic!("Failed to read line: {:?}", line),
+            };
+            let fields: Vec<_> = line.split('\t').collect();
+            match fields[0] {
+                "0" => { core.insert(fields[1].to_owned()); }
+                "1" => { neighbour.insert(fields[1].to_owned()); }
+                _ => { panic!("Invalid cluster file"); }
+            }
+        }
+        (Some(core), Some(neighbour))
+    } else {
+        (None, None)
+    }
 }
 
 fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
