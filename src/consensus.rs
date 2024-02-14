@@ -190,15 +190,15 @@ fn consensus(
                 if base != b'*' {
                     corrected_bases.push(base);
 
-                    let qual = (10. * (logits[idx].exp() + 1.).log10()) as u8;
-                    corrected_bases.push(qual);
+                    let qual = (10. * (logits[idx].exp() + 1.).log10()).round() as u8;
+                    corrected_quals.push(qual);
                 }
             } else {
                 // Count bases
                 counts.iter_mut().for_each(|c| *c = 0);
-                scores.iter_mut().for_each(|s| *s = 0.);
+                scores.iter_mut().for_each(|s| *s = -1.);
 
-                bases_col.iter().zip(quals.iter()).for_each(|(&b, &q)| {
+                bases_col.iter().zip(quals_col.iter()).for_each(|(&b, &q)| {
                     if b != BASES_MAP[b'.' as usize] {
                         counts[BASES_UPPER_COUNTER[b as usize]] += 1;
 
@@ -313,5 +313,5 @@ pub(crate) fn consensus_worker(
 }
 
 fn qual_transform_inv(x: f32) -> u8 {
-    ((x + 1.) * (QUAL_MAX_VAL - QUAL_MIN_VAL) / 2.) as u8
+    ((x + 1.) * (QUAL_MAX_VAL - QUAL_MIN_VAL) / 2.).round() as u8
 }
