@@ -187,32 +187,42 @@ fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32) -> Vec<HAECRecor
 fn correction_writer<U: AsRef<Path>>(
     reads: &[HAECRecord],
     output_path: U,
-    consensus_recv: Receiver<(usize, Vec<Vec<u8>>)>,
+    consensus_recv: Receiver<(usize, Vec<(Vec<u8>, Vec<u8>)>)>,
     pbar_sender: Sender<PBarNotification>,
 ) {
     let file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(file);
 
     loop {
-        let (rid, seqs) = match consensus_recv.recv() {
+        let (rid, mut seqs) = match consensus_recv.recv() {
             Ok(out) => out,
             Err(_) => break,
         };
 
         if seqs.len() == 1 {
-            write!(&mut writer, ">").unwrap();
+            let (bases, mut quals) = seqs.pop().unwrap();
+
+            write!(&mut writer, "@").unwrap();
             writer.write_all(&reads[rid].id).unwrap();
             write!(&mut writer, "\n").unwrap();
 
-            writer.write_all(&seqs[0]).unwrap();
+            writer.write_all(&bases).unwrap();
+            write!(&mut writer, "\n+\n").unwrap(); // Write end of the second and third line
+
+            quals.iter_mut().for_each(|q| *q += 33);
+            writer.write_all(&quals).unwrap();
             write!(&mut writer, "\n").unwrap();
         } else {
-            for (i, seq) in seqs.into_iter().enumerate() {
-                write!(&mut writer, ">").unwrap();
+            for (i, (bases, mut quals)) in seqs.into_iter().enumerate() {
+                write!(&mut writer, "@").unwrap();
                 writer.write_all(&reads[rid].id).unwrap();
                 write!(&mut writer, ":{}\n", i).unwrap();
 
-                writer.write_all(&seq).unwrap();
+                writer.write_all(&bases).unwrap();
+                write!(&mut writer, "\n+\n").unwrap(); // Write end of the second and third line
+
+                quals.iter_mut().for_each(|q| *q += 33);
+                writer.write_all(&quals).unwrap();
                 write!(&mut writer, "\n").unwrap();
             }
         }

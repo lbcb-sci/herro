@@ -3,7 +3,7 @@ use std::path::Path;
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
 
-use ndarray::{s, Array2, ArrayBase, Axis, Data, Ix2};
+use ndarray::{s, Array2, ArrayBase, ArrayD, Axis, Data, Ix2};
 
 use tch::{CModule, IValue, IndexOp, Tensor};
 
@@ -13,8 +13,8 @@ use crate::{
 };
 
 const BASE_PADDING: u8 = 11;
-const QUAL_MIN_VAL: f32 = 33.;
-const QUAL_MAX_VAL: f32 = 126.;
+pub(crate) const QUAL_MIN_VAL: f32 = 33.;
+pub(crate) const QUAL_MAX_VAL: f32 = 126.;
 
 pub(crate) const BASES_MAP: [u8; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -179,7 +179,7 @@ fn inference(
 
     let info_logits = info_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
     let bases_logits = bases_logits
-        .argmax(1, false)
+        //.argmax(1, false)
         .to(tch::Device::Cpu)
         .split_with_sizes(&lens, 0);
 
@@ -213,9 +213,10 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
                         .info_logits
                         .replace(Vec::try_from(il).unwrap());
 
+                    let bl: ArrayD<f32> = (&bl).try_into().unwrap();
                     data.consensus_data[wid as usize]
                         .bases_logits
-                        .replace(Vec::try_from(bl).unwrap());
+                        .replace(bl.into_dimensionality().unwrap());
                 });
         }
 
