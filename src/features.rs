@@ -638,16 +638,6 @@ fn output_features<P: AsRef<Path>>(
     writer.extend(features.iter())?;
     writer.finish()?;
 
-    let quals_path = path.as_ref().join(format!("{}.quals.npy", window_id));
-    let shape: Vec<_> = quals.shape().iter().map(|&s| s as u64).collect();
-    let mut writer = npyz::WriteOptions::new()
-        .default_dtype()
-        .shape(&shape)
-        .writer(BufWriter::new(File::create(quals_path)?))
-        .begin_nd()?;
-    writer.extend(quals.iter())?;
-    writer.finish()?;
-
     let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
