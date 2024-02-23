@@ -48,7 +48,7 @@ if __name__ == "__main__":
       zeta[k].add(v[0])
   print(f'Edgecuts: {edgecuts}')
   writer = Writer(f'clusters/{prefix}')
-  for z in zeta:
+  for z in zeta.values():
     cluster = Cluster()  
     for v in z:
       cluster.core.add(v)
