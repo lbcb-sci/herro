@@ -99,6 +99,7 @@ struct InferenceArgs {
 
     #[arg(
         short = 'c',
+        default_value = "",
         help = "Path to a cluster of reads."
     )]
     cluster : String,
