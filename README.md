@@ -8,45 +8,52 @@ HERRO (Haplotype-aware ERRor cOrrection) is a highly-accurate, haplotype-aware, 
 - [Zstandard](https://facebook.github.io/zstd/)
 - Python (and conda) for data preprocessing
 
-### Compile from source
-
-- [libtorch 2.0.*](https://download.pytorch.org/libtorch/cu117/libtorch-shared-with-deps-2.0.1%2Bcu117.zip)
-- [rustup](https://rustup.rs/)
-
 
 ## Installation
 
-0. Clone the repository
-```shell
-git clone https://github.com/dominikstanojevic/herro.git
-cd herro
-```
+### Install with Conda
 
-1. Create conda environment
-```shell
-conda env create --file scripts/herro-env.yml
-```
+1. Clone the repository and change directory 
 
-2. Build ```herro``` binary (singularity or compile from source)
+   ```shell
+   git clone https://github.com/dominikstanojevic/herro.git
+   cd herro
+   ```
 
-    a. Download singularity image:
-    
-    1. Download the image
+2.  Create  the conda environment with the provided *herro-env.yml* on `scripts/` directory
+
+    ```shell
+    conda env create --file scripts/herro-env.yml
+    ```
+
+### Use the pre-built Singularity image ( can be used with Apptainer as well) 
+
+* Pre-built image can be downloaded as below 
+
     ```shell
     wget http://complex.zesoi.fer.hr/data/downloads/herro.sif
     ```
     
 
-    b. Build singularity image (requires sudo)
+* If you would like the build the container image yourself, we provide the *herro-singularity.def* file. Image can be built with the following command ( assuming you have `sudo` permissions for the machine you work with.)
+
     ```shell
     sudo singularity build herro.sif herro-singularity.def
     ```
     
     Run the tool (see [Usage](#usage)) with: ```singularity run --nv --bind <host_path>:<dest_path> herro.sif inference <args>```
 
-    c. Compile
+
+### Compile from source ( In case you don't prefer `conda` or Container option)
     
-    When compiling from source, ensure that libtorch and rustup are downloaded and installed.
+* **Dependencies**
+
+  - [libtorch 2.0.*](https://download.pytorch.org/libtorch/cu117/libtorch-shared-with-deps-2.0.1%2Bcu117.zip)
+  - [rustup](https://rustup.rs/)
+
+
+    
+* When compiling from source, ensure that libtorch and rustup are downloaded and installed.
 
     ```shell
     export LIBTORCH=<libtorch_path>
