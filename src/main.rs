@@ -97,6 +97,13 @@ struct InferenceArgs {
     )]
     batch_size: usize,
 
+    #[arg(
+        short = 'c',
+        default_value = "",
+        help = "Path to a cluster of reads."
+    )]
+    cluster : String,
+
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
     reads: String,
 
@@ -136,6 +143,7 @@ fn main() {
                 args.reads,
                 &args.model,
                 args.output,
+                &args.cluster,
                 args.feat_gen_threads,
                 args.window_size,
                 args.devices,
