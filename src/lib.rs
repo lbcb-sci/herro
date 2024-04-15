@@ -214,7 +214,7 @@ fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<Fx
         let g = reads_path.as_ref().join("*").to_str().unwrap().to_owned();
         let reads : Vec<_> = glob(&g).unwrap()
             .filter_map(|p| p.ok().and_then(|path| path.to_str().map(|s| s.to_owned())))
-            .filter(|s| s.ends_with(".fastq") || s.ends_with(".fastq.gz"))
+            .filter(|s| s.ends_with(".fastq") || s.ends_with(".fastq.gz") || s.ends_with(".fq") || s.ends_with(".fq.gz"))
             .flat_map(|s| haec_io::get_reads(&s, window_size, core, neighbour))
             .collect();
         set_parse_reads_spinner_finish(reads.len(), spinner);
