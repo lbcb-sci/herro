@@ -58,10 +58,15 @@ conda env create --file scripts/herro-env.yml
 ## Model Download
 
   1. Download model:
+     
+  For R10.4.1 data,
   ```shell
   wget http://complex.zesoi.fer.hr/data/downloads/model_v0.1.pt
   ```
-
+  For R9.4.1 data (experimental),
+  ```shell
+  wget http://complex.zesoi.fer.hr/data/downloads/model_R9_v0.1.pt
+  ```
 
 ## Usage
 
