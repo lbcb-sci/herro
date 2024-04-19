@@ -1,6 +1,6 @@
 # HERRO
 
-HERRO is a highly-accurate, haplotype-aware, deep-learning tool for error correction of Nanopore R10.4.1, Kit 14 reads (length of ≥ 10000bp is recommended). An experimental model for R9.4.1 data is also provided for download.
+HERRO (Haplotype-aware ERRor cOrrection)  is a highly accurate, haplotype-aware, deep-learning tool for error correction of Nanopore R10.4.1, Kit 14 reads (length of ≥ 10000bp is recommended). An experimental model for R9.4.1 data is also provided for download.
 
 ## Requirements
 
