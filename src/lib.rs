@@ -34,7 +34,7 @@ mod windowing;
 pub(crate) const READS_BATCH_SIZE: usize = 100_000;
 pub(crate) const ALN_CHANNEL_CAPACITY: usize = 50_000;
 pub(crate) const LINE_ENDING: u8 = b'\n';
-pub(crate) const INFER_CHANNEL_CAP_FACTOR: usize = 2;
+pub(crate) const INFER_CHANNEL_CAP_FACTOR: usize = 4;
 
 pub enum AlnMode<V: AsRef<Path>> {
     None,

@@ -6,8 +6,11 @@ set -e
 script_dir=$(dirname "$0")
 porechop_script="${script_dir}/porechop_with_split.sh"
 no_split_script="${script_dir}/no_split.sh"
-seqkit='seqkit'
+#seqkit='seqkit'
 duplex_tools='duplex_tools'
+#>&2 echo "seqkit version: $($seqkit version)"
+>&2 echo "duplex_tools version: $($duplex_tools --version)"
+>&2 echo "porechop version: $(porechop --version)"
 
 format=fastq.gz
 
@@ -60,9 +63,10 @@ $duplex_tools split_on_adapter --threads $num_threads --allow_multiple_splits $d
 # clean up porechop
 rm "${duplex_tools_input_dir}/porechopped.${format}"
 
-# seqkit
-filtered="${output_prefix}.${format}"
-$seqkit seq -m 10000 -o $filtered $duplex_tools_output
+
+final_output="${output_prefix}.${format}"
+#$seqkit seq -m 10000 -o $final_output $duplex_tools_output
+mv $duplex_tools_output $final_output
 
 # clean up duplex_tools
 rm -r $duplex_tools_input_dir

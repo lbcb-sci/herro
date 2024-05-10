@@ -3,7 +3,7 @@ set -e
 #set -x
 
 # enter the paths to these tools, or just leave it if they are in PATH
-seqkit='seqkit'
+#seqkit='seqkit'
 porechop='porechop'
 duplex_tools='duplex_tools'
 
@@ -21,7 +21,7 @@ input=$1
 output_prefix=$2
 num_threads=$3
 
-# format for porechop output and seqkit filtering output
+# format for porechop output 
 format=fastq.gz
 
 
@@ -50,9 +50,9 @@ $duplex_tools split_on_adapter --threads $num_threads --allow_multiple_splits $d
 # clean up porechop
 rm "${duplex_tools_input_dir}/porechopped.${format}"
 
-# seqkit
-filtered="${output_prefix}.${format}"
-$seqkit seq -m 10000 -o $filtered $duplex_tools_output
+final_output="${output_prefix}.${format}"
+#$seqkit seq -m 10000 -o $final_output $duplex_tools_output
+mv $duplex_tools_output $final_output
 
 # clean up duplex_tools
 rm -r $duplex_tools_input_dir
