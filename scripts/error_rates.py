@@ -11,6 +11,7 @@ def estimate_error_bam(bam_path, restriction_path:str):
 
     error_rates = []
     mismatch_rates = []
+    indel_rates = []
     num_unmapped = 0
     with pysam.AlignmentFile(bam_path) as bam:
         for record in bam.fetch(until_eof=True): # if not index, same as until_eof=True
@@ -36,8 +37,10 @@ def estimate_error_bam(bam_path, restriction_path:str):
             
             error_rate = (num_mismatch + num_ins + num_del) / num_columns * 100
             mismatch_rate = (num_mismatch) / num_columns * 100
+            indel_rate = (num_ins + num_del) /num_columns * 100 
             error_rates.append(error_rate)
             mismatch_rates.append(mismatch_rate)
+            indel_rates.append(indel_rate)
 
 
     error_rates.sort()
@@ -45,6 +48,7 @@ def estimate_error_bam(bam_path, restriction_path:str):
     median = error_rates[num_values // 2]
     print(f'mean error rate: {sum(error_rates)/num_values}%')
     print(f'mean mismatch error: {sum(mismatch_rates)/num_values}%')
+    print(f'mean indel error: {sum(indel_rates)/num_values}%')
     print(f'median error rate: {median}%')
     print('num mapped', num_values) 
     print('num unmapped ', num_unmapped) 
