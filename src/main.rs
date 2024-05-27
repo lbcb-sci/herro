@@ -87,9 +87,9 @@ struct InferenceArgs {
         short = 'd',
         value_delimiter = ',',
         default_value = "0",
-        help = "List of cuda devices in format d0,d1... (e.g 0,1,3) (default 0)"
+        help = "List of cuda devices in format d0,d1... (e.g 0,1,3), or cpu to use CPU (default 0)"
     )]
-    devices: Vec<usize>,
+    devices: Vec<String>,
 
     #[arg(
         short = 'b',

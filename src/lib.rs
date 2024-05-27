@@ -100,7 +100,7 @@ pub fn error_correction<T, U, V>(
     cluster_path: &str,
     threads: usize,
     window_size: u32,
-    devices: Vec<usize>,
+    devices: Vec<String>,
     batch_size: usize,
     aln_mode: AlnMode<V>,
 ) where
@@ -160,7 +160,7 @@ pub fn error_correction<T, U, V>(
             s.spawn(move || {
                 inference_worker(
                     model_path,
-                    tch::Device::Cuda(device),
+                    if device == "cpu" { tch::Device::Cpu } else { tch::Device::Cuda(device.parse::<usize>().unwrap()) },
                     infer_recv,
                     cons_sender,
                 )
