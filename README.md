@@ -91,6 +91,9 @@ herro inference --read-alns <directory_alignment_batches> -t <feat_gen_threads_p
 ```
 Note: GPUs are specified using their IDs. For example, if the value of the parameter -d is set to 0,1,3, herro will use the first, second, and fourth GPU cards. Parameter ```-t``` is given **per device** - e.g., if ```-t``` is set to ```8``` and 3 GPUs are used, herro will create 24 feature generation theads in total. Recommended batch size is 64 for GPUs with 40 GB (possibly also for 32 GB) of VRAM and 128 for GPUs with 80 GB of VRAM. 
 
+## Citing HERRO
+
+> Stanojevic, D., Lin, D., Florez De Sessions, P., & Sikic, M. (2024). Telomere-to-telomere phased genome assembly using error-corrected Simplex nanopore reads. bioRxiv, 2024-05. [doi:10.1101/2024.05.18.594796](https://doi.org/10.1101/2024.05.18.594796)
 
 ## Results on HG002 data
 
