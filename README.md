@@ -68,6 +68,8 @@ conda env create --file scripts/herro-env.yml
   wget http://metals.zesoi.fer.hr:9080/herro/model_R9_v0.1.pt
   ```
 
+Models can also be found on Zenodo: [https://zenodo.org/records/12683277](https://zenodo.org/records/12683277)
+
 ## Usage
 
 1. Preprocess reads
