@@ -82,7 +82,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
     let bases = Tensor::full(
         &size,
         BASE_PADDING as i64,
-        (tch::Kind::Int, tch::Device::Cpu),
+        (tch::Kind::Uint8, tch::Device::Cpu),
     );
 
     let quals = Tensor::ones(&size, (tch::Kind::Float, tch::Device::Cpu));
@@ -162,7 +162,7 @@ fn inference(
     device: tch::Device,
 ) -> (Vec<u32>, Vec<Tensor>, Vec<Tensor>) {
     let inputs = [
-        IValue::Tensor(batch.bases.to(device)),
+        IValue::Tensor(batch.bases.to_device_(device, tch::Kind::Int, true, true)),
         IValue::Tensor(batch.quals.to(device)),
         IValue::Tensor(batch.lens),
         IValue::TensorList(batch.indices),
