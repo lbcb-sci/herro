@@ -94,7 +94,7 @@ fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
 
 fn get_features_for_ol_window(
     mut bases: ArrayViewMut1<'_, u8>,
-    mut quals: ArrayViewMut1<'_, f32>,
+    mut quals: ArrayViewMut1<'_, u8>,
     window: &OverlapWindow,
     cigar: &[CigarOp],
     query: &HAECRecord,
@@ -191,7 +191,7 @@ fn get_features_for_ol_window(
                             .next()
                             .expect("Base and its quality should be present.");
                         bases[idx] = *base;
-                        quals[idx] = *qual as f32;
+                        quals[idx] = *qual;
 
                         idx += 1 + max_ins[tpos + i] as usize;
                     }
@@ -219,7 +219,7 @@ fn get_features_for_ol_window(
                             .expect("Base and its quality should be present.");
 
                         bases[idx + i] = *base;
-                        quals[idx + i] = *qual as f32;
+                        quals[idx + i] = *qual;
                     }
                     idx += max_ins[tpos - 1] as usize; // Move back to the last base
                 }
@@ -237,7 +237,7 @@ fn write_target_for_window(
     target: &HAECRecord,
     max_ins: &[u16],
     mut bases: ArrayViewMut1<'_, u8>,
-    mut quals: ArrayViewMut1<'_, f32>,
+    mut quals: ArrayViewMut1<'_, u8>,
     window_length: usize,
     tbuffer: &[u8],
 ) {
@@ -255,7 +255,7 @@ fn write_target_for_window(
         .enumerate()
         .for_each(|(i, (b, q))| {
             bases[tpos] = *b;
-            quals[tpos] = *q as f32;
+            quals[tpos] = *q;
 
             tpos += 1 + max_ins[i] as usize;
         });
@@ -271,12 +271,12 @@ fn get_features_for_window(
     window_length: usize, // Full window length
     tbuffer: &[u8],
     qbuffer: &mut [u8],
-) -> (Array2<u8>, Array2<f32>) {
+) -> (Array2<u8>, Array2<u8>) {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
     let mut bases = Array::from_elem((length, 1 + TOP_K), b'.');
-    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!' as f32);
+    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!');
 
     // First write the target
     write_target_for_window(
@@ -612,7 +612,7 @@ fn output_features<P: AsRef<Path>>(
     window_id: u16,
     ids: &[&str],
     bases: Array2<u8>,
-    quals: Array2<f32>,
+    quals: Array2<u8>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
@@ -658,7 +658,7 @@ pub(crate) trait FeaturesOutput<'a> {
         rid: u32,
         wid: u16,
         bases: Array2<u8>,
-        quals: Array2<f32>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         n_wids: u16,
@@ -705,7 +705,7 @@ where
         _rid: u32,
         wid: u16,
         bases: Array2<u8>,
-        quals: Array2<f32>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         _n_wids: u16,
@@ -752,7 +752,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         rid: u32,
         wid: u16,
         bases: Array2<u8>,
-        quals: Array2<f32>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         n_wids: u16,
