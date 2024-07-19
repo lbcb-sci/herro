@@ -34,7 +34,12 @@ impl HAECRecord {
     }
 }
 
-pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
+pub fn get_reads<P: AsRef<Path>>(
+    path: P,
+    min_length: u32,
+    core: &Option<FxHashSet<String>>,
+    neighbour: &Option<FxHashSet<String>>,
+) -> Vec<HAECRecord> {
     let mut reader = parse_fastx_file(path).expect("Cannot open file containing reads.");
 
     let mut reads = Vec::new();
@@ -55,7 +60,9 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32, core: &Option<FxHashS
             .to_owned();
 
         if let (Some(core), Some(neighbour)) = (&core, &neighbour) {
-            if !neighbour.contains(std::str::from_utf8(&id).unwrap()) && !core.contains(std::str::from_utf8(&id).unwrap()) {
+            if !neighbour.contains(std::str::from_utf8(&id).unwrap())
+                && !core.contains(std::str::from_utf8(&id).unwrap())
+            {
                 continue;
             }
         }
@@ -147,9 +154,7 @@ fn decode<R: RangeBounds<usize>>(
         std::ops::Bound::Excluded(e) => *e,
     };
 
-    if end > length {
-        panic!("Out of bounds for 2-bit sequence decoding.")
-    }
+    assert!(end > length, "Out of bounds for 2-bit sequence decoding.");
 
     if start >= end {
         return;

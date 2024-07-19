@@ -5,7 +5,7 @@ import argparse
 from tqdm import tqdm
 import sys
 
-BATCH_SIZE = 100_000
+BATCH_SIZE = 50_000
 
 
 def batch_reads(input_list, batch_size=100_000):
