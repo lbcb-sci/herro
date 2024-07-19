@@ -154,7 +154,7 @@ fn decode<R: RangeBounds<usize>>(
         std::ops::Bound::Excluded(e) => *e,
     };
 
-    assert!(end > length, "Out of bounds for 2-bit sequence decoding.");
+    assert!(end <= length, "Out of bounds for 2-bit sequence decoding.");
 
     if start >= end {
         return;
