@@ -8,7 +8,7 @@ use pbars::{
 };
 
 use glob::glob;
-use rustc_hash::FxHashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::fs::metadata;
 use std::{
     fs::File,
@@ -201,15 +201,15 @@ pub fn error_correction<T, U, V>(
     });
 }
 
-fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHashSet<String>>) {
+fn read_cluster(cluster_path: &&str) -> (Option<HashSet<String>>, Option<HashSet<String>>) {
     if !cluster_path.is_empty() {
         let file = match File::open(&cluster_path) {
             Ok(file) => file,
             Err(_) => panic!("Failed to open file: {:?}", cluster_path),
         };
         let reader = io::BufReader::new(file);
-        let mut core: FxHashSet<String> = FxHashSet::default();
-        let mut neighbour: FxHashSet<String> = FxHashSet::default();
+        let mut core: HashSet<String> = HashSet::default();
+        let mut neighbour: HashSet<String> = HashSet::default();
         for line in reader.lines() {
             let line = match line {
                 Ok(line) => line,
@@ -237,8 +237,8 @@ fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHas
 fn parse_reads<P: AsRef<Path>>(
     reads_path: P,
     window_size: u32,
-    core: &Option<FxHashSet<String>>,
-    neighbour: &Option<FxHashSet<String>>,
+    core: &Option<HashSet<String>>,
+    neighbour: &Option<HashSet<String>>,
 ) -> Vec<HAECRecord> {
     // Get fastq reads
     let spinner = get_parse_reads_spinner(None);
