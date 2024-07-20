@@ -221,7 +221,8 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
 }
 
 fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
-    let n_ops = cigar.iter().filter(|c| c.is_ascii_alphabetic()).count();
+    //let n_ops = cigar.iter().filter(|c| c.is_ascii_alphabetic()).count();
+    let n_ops = cigar.len() / 2;
     let mut ops = Vec::with_capacity(n_ops);
 
     let mut l = 0;
