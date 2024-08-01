@@ -1,4 +1,9 @@
-use crate::{aligners::CigarOp, overlaps::Overlap};
+use ordered_float::Pow;
+
+use crate::{
+    aligners::{CigarIter, CigarOp},
+    overlaps::Overlap,
+};
 
 #[derive(Clone, Debug)]
 pub struct OverlapWindow<'a> {
@@ -41,7 +46,7 @@ type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 pub(crate) fn extract_windows<'a>(
     windows: &mut Windows<'a>,
     overlap: &'a Overlap,
-    cigar: &[CigarOp],
+    cigar: &[u8],
     tshift: u32,
     qshift: u32,
     is_target: bool,
@@ -121,13 +126,13 @@ pub(crate) fn extract_windows<'a>(
         cigar_start_offset = Some(0);
     }
 
-    let mut cigar_iter = cigar.iter().enumerate().peekable();
-    while let Some((cigar_idx, op)) = cigar_iter.next() {
+    let mut cigar_iter = CigarIter::new(cigar).peekable();
+    while let Some((op, range)) = cigar_iter.next() {
         let (tnew, qnew) = match op {
-            CigarOp::Match(l) | CigarOp::Mismatch(l) => (tpos + *l, qpos + *l),
-            CigarOp::Deletion(l) => (tpos + *l, qpos),
+            CigarOp::Match(l) | CigarOp::Mismatch(l) => (tpos + l, qpos + l),
+            CigarOp::Deletion(l) => (tpos + l, qpos),
             CigarOp::Insertion(l) => {
-                qpos += *l;
+                qpos += l;
                 continue;
             }
         };
@@ -162,7 +167,7 @@ pub(crate) fn extract_windows<'a>(
                     q_start_new,
                     cigar_start_idx.unwrap(),
                     cigar_start_offset.unwrap(),
-                    cigar_idx,
+                    range.end,
                     offset,
                 ));
 
@@ -175,7 +180,7 @@ pub(crate) fn extract_windows<'a>(
                     q_window_start.replace(qpos);
                 }
 
-                cigar_start_idx.replace(cigar_idx);
+                cigar_start_idx.replace(range.start);
                 cigar_start_offset.replace(offset);
             } else {
                 t_window_start = Some(tpos + offset);
@@ -186,7 +191,7 @@ pub(crate) fn extract_windows<'a>(
                     q_window_start = Some(qpos);
                 }
 
-                cigar_start_idx = Some(cigar_idx);
+                cigar_start_idx = Some(range.start);
                 cigar_start_offset = Some(offset)
             }
         }
@@ -202,18 +207,28 @@ pub(crate) fn extract_windows<'a>(
 
         let cigar_end_idx;
         let cigar_end_offset;
+        let next_cigar_start_idx;
+        let next_cigar_start_offset;
         if tnew == new_w * window_size {
-            if let Some(CigarOp::Insertion(l)) = cigar_iter.peek().map(|(_, op)| op) {
+            if let Some((CigarOp::Insertion(l), range_next)) = cigar_iter.peek() {
                 qend += *l;
-                cigar_end_idx = cigar_idx + 2;
+                //cigar_end_idx = cigar_idx + 2;
+                cigar_end_idx = range_next.end;
+                cigar_end_offset = *l;
             } else {
-                cigar_end_idx = cigar_idx + 1;
+                //cigar_end_idx = cigar_idx + 1;
+                cigar_end_idx = range.end;
+                cigar_end_offset = op.get_length();
             }
 
-            cigar_end_offset = 0; // Beginning of the new op
+            next_cigar_start_idx = cigar_end_idx;
+            next_cigar_start_offset = 0;
         } else {
-            cigar_end_idx = cigar_idx;
+            cigar_end_idx = range.end;
             cigar_end_offset = offset;
+
+            next_cigar_start_idx = range.start;
+            next_cigar_start_offset = cigar_end_offset;
         }
 
         if cigar_start_idx.is_some() {
@@ -230,13 +245,14 @@ pub(crate) fn extract_windows<'a>(
 
             t_window_start.replace(tpos + offset);
             q_window_start.replace(qend);
-            cigar_start_idx.replace(cigar_end_idx);
-            cigar_start_offset.replace(cigar_end_offset);
+
+            cigar_start_idx.replace(next_cigar_start_idx);
+            cigar_start_offset.replace(next_cigar_start_offset);
         } else {
             t_window_start = Some(tpos + offset);
             q_window_start = Some(qend);
-            cigar_start_idx = Some(cigar_end_idx);
-            cigar_start_offset = Some(cigar_end_offset);
+            cigar_start_idx = Some(next_cigar_start_idx);
+            cigar_start_offset = Some(next_cigar_start_offset);
         }
 
         tpos = tnew;
@@ -253,8 +269,26 @@ pub(crate) fn extract_windows<'a>(
             cigar_start_idx.unwrap(),
             cigar_start_offset.unwrap(),
             cigar.len(),
-            0,
+            get_last_cigar_op(&cigar).get_length(),
         ));
+    }
+}
+
+fn get_last_cigar_op(cigar: &[u8]) -> CigarOp {
+    let op = cigar[cigar.len() - 1];
+
+    let mut len = 0;
+    let mut idx = 0;
+    while cigar[cigar.len() - idx - 2].is_ascii_digit() {
+        len += (cigar[cigar.len() - idx - 2] - b'0') as u32 * 10u32.pow(idx as u32);
+        idx += 1;
+    }
+
+    match op {
+        b'M' => CigarOp::Match(len),
+        b'I' => CigarOp::Insertion(len),
+        b'D' => CigarOp::Deletion(len),
+        _ => panic!("Invalid cigar op"),
     }
 }
 

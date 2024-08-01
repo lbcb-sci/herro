@@ -91,11 +91,11 @@ impl Overlap {
 #[derive(Debug)]
 pub struct Alignment {
     pub overlap: Overlap,
-    pub cigar: Vec<CigarOp>,
+    pub cigar: Vec<u8>,
 }
 
 impl Alignment {
-    pub fn new(overlap: Overlap, cigar: Vec<CigarOp>) -> Self {
+    pub fn new(overlap: Overlap, cigar: Vec<u8>) -> Self {
         Alignment { overlap, cigar }
     }
 }
@@ -169,8 +169,8 @@ pub fn parse_paf(
         let tstart: u32 = bytes_to_u32(data.next().unwrap());
         let tend: u32 = bytes_to_u32(data.next().unwrap());
 
-        let cigar = data.last().unwrap();
-        let cigar = parse_cigar(&cigar[5..]);
+        let cigar = data.last().unwrap()[5..].to_owned();
+        //let cigar = parse_cigar(&cigar[5..]);
 
         if tid == qid {
             // Cannot have self-overlaps

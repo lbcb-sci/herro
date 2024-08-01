@@ -63,7 +63,7 @@ impl ToString for CigarOp {
 }
 
 #[allow(dead_code)]
-pub fn cigar_to_string(cigar: &[CigarOp]) -> String {
+pub fn cigar_to_string(cigar: &[u8]) -> String {
     cigar.iter().map(|op| op.to_string()).collect()
 }
 
@@ -247,6 +247,49 @@ pub(crate) fn fix_cigar(cigar: &mut Vec<CigarOp>, target: &[u8], query: &[u8]) -
     cigar.drain(l..);
 
     (tshift, qshift)
+}
+
+pub(crate) struct CigarIter<'a> {
+    data: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> CigarIter<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> Self {
+        CigarIter { data, pos: 0 }
+    }
+}
+
+impl<'a> Iterator for CigarIter<'a> {
+    type Item = (CigarOp, std::ops::Range<usize>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.pos >= self.data.len() {
+            return None;
+        }
+
+        let start = self.pos;
+        let mut len = 0;
+
+        while self.data[self.pos].is_ascii_digit() {
+            len = len * 10 + (self.data[self.pos] - b'0') as u32;
+            self.pos += 1;
+        }
+
+        assert!(len > 0, "Length has to be longer than 0");
+
+        let op = match self.data[self.pos] {
+            b'M' => CigarOp::Match(len),
+            b'I' => CigarOp::Insertion(len),
+            b'D' => CigarOp::Deletion(len),
+            op @ _ => panic!("Unexpected cigar operation {}", op as char), // handle unexpected character
+        };
+
+        self.pos += 1;
+        let end = self.pos;
+
+        Some((op, start..end))
+    }
 }
 
 #[cfg(test)]
