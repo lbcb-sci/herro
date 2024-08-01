@@ -33,7 +33,7 @@ conda env create --file scripts/herro-env.yml
     
     1. Download the image
     ```shell
-    wget http://metals.zesoi.fer.hr:9080/herro/herro.sif
+    wget -O herro.sif https://zenodo.org/records/13148100/files/herro.sif?download=1
     ```
     
 
@@ -61,11 +61,11 @@ conda env create --file scripts/herro-env.yml
      
   For R10.4.1 data,
   ```shell
-  wget http://metals.zesoi.fer.hr:9080/herro/model_v0.1.pt
+  wget -O model_R10_v0.1.pt https://zenodo.org/records/12683277/files/model_v0.1.pt?download=1
   ```
   For R9.4.1 data (experimental),
   ```shell
-  wget http://metals.zesoi.fer.hr:9080/herro/model_R9_v0.1.pt
+  wget -O model_R9_v0.1.pt https://zenodo.org/records/12683277/files/model_R9_v0.1.pt?download=1
   ```
 
 Models can also be found on Zenodo: [https://zenodo.org/records/12683277](https://zenodo.org/records/12683277)
