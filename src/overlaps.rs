@@ -1,7 +1,7 @@
 use crossbeam_channel::Sender;
 use glob::glob;
-use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 use rustc_hash::FxHashSet as HashSet;
+use rustc_hash::{FxHashMap as HashMap, FxHashSet};
 use zstd::stream::AutoFinishEncoder;
 use zstd::Encoder;
 
@@ -116,6 +116,7 @@ impl Eq for Overlap {}
 
 pub fn parse_paf(
     mut reader: impl BufRead,
+    reads: &[HAECRecord],
     name_to_id: &HashMap<&[u8], u32>,
     core: &Option<FxHashSet<String>>,
     mut alns_writer: Option<&mut AutoFinishEncoder<BufWriter<File>>>,
@@ -142,6 +143,15 @@ pub fn parse_paf(
             }
         };
         let qlen = bytes_to_u32(data.next().unwrap());
+        if reads[qid as usize].seq.len() != qlen as usize {
+            let id = std::str::from_utf8(&reads[qid as usize].id).unwrap();
+            let l = reads[qid as usize].seq.len();
+            panic!(
+                "Lengths for read {} differ in fastq file and in alignment file ({} vs {}).",
+                id, l, qlen
+            )
+        }
+
         let qstart = bytes_to_u32(data.next().unwrap());
         let qend = bytes_to_u32(data.next().unwrap());
 
@@ -166,6 +176,15 @@ pub fn parse_paf(
         };
 
         let tlen: u32 = bytes_to_u32(data.next().unwrap());
+        if reads[tid as usize].seq.len() != tlen as usize {
+            let id = std::str::from_utf8(&reads[tid as usize].id).unwrap();
+            let l = reads[tid as usize].seq.len();
+            panic!(
+                "Lengths for read {} differ in fastq file and in alignment file ({} vs {}).",
+                id, l, tlen
+            )
+        }
+
         let tstart: u32 = bytes_to_u32(data.next().unwrap());
         let tend: u32 = bytes_to_u32(data.next().unwrap());
 
@@ -249,11 +268,11 @@ pub(crate) fn generate_batches<'a, P, T>(
     reads_path: P,
     threads: usize,
     alns_path: Option<T>,
-) -> impl Iterator<Item=HashMap<u32, Vec<Alignment>>> + 'a
-    where
-        P: AsRef<Path>,
-        P: 'a,
-        T: AsRef<Path> + 'a,
+) -> impl Iterator<Item = HashMap<u32, Vec<Alignment>>> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
+    T: AsRef<Path> + 'a,
 {
     if let Some(ref ap) = alns_path {
         create_dir_all(ap).unwrap();
@@ -279,18 +298,19 @@ pub(crate) fn generate_batches<'a, P, T>(
                 w
             });
 
-            parse_paf(mm2_out, &name_to_id, &None, writer.as_mut())
+            parse_paf(mm2_out, reads, &name_to_id, &None, writer.as_mut())
         })
 }
 
 pub(crate) fn read_batches<'a, P>(
+    reads: &'a [HAECRecord],
     name_to_id: &'a HashMap<&[u8], u32>,
-    core : &'a Option<FxHashSet<String>>,
+    core: &'a Option<FxHashSet<String>>,
     batches: P,
-) -> impl Iterator<Item=HashMap<u32, Vec<Alignment>>> + 'a
-    where
-        P: AsRef<Path>,
-        P: 'a,
+) -> impl Iterator<Item = HashMap<u32, Vec<Alignment>>> + 'a
+where
+    P: AsRef<Path>,
+    P: 'a,
 {
     let g = batches.as_ref().join("*.oec.zst");
     glob(g.to_str().unwrap()).unwrap().map(|p| {
@@ -316,7 +336,7 @@ pub(crate) fn read_batches<'a, P>(
             })
             .collect();
 
-        parse_paf(&mut reader, name_to_id, core, None)
+        parse_paf(&mut reader, reads, name_to_id, core, None)
     })
 }
 
@@ -335,13 +355,13 @@ pub(crate) fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
         .map(|(i, e)| (&*e.id, i as u32))
         .collect();
 
-    let batches: Box<dyn Iterator<Item=HashMap<u32, Vec<Alignment>>>> = match aln_mode {
+    let batches: Box<dyn Iterator<Item = HashMap<u32, Vec<Alignment>>>> = match aln_mode {
         AlnMode::None => {
             let batches = generate_batches(&reads, &name_to_id, &reads_path, n_threads, None::<T>);
             Box::new(batches)
         }
         AlnMode::Read(path) => {
-            let batches = read_batches(&name_to_id, &core, path);
+            let batches = read_batches(reads, &name_to_id, &core, path);
             Box::new(batches)
         }
         AlnMode::Write(path) => {

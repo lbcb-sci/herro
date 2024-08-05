@@ -34,7 +34,12 @@ impl HAECRecord {
     }
 }
 
-pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
+pub fn get_reads<P: AsRef<Path>>(
+    path: P,
+    min_length: u32,
+    core: &Option<FxHashSet<String>>,
+    neighbour: &Option<FxHashSet<String>>,
+) -> Vec<HAECRecord> {
     let mut reader = parse_fastx_file(path).expect("Cannot open file containing reads.");
 
     let mut reads = Vec::new();
@@ -55,7 +60,9 @@ pub fn get_reads<P: AsRef<Path>>(path: P, min_length: u32, core: &Option<FxHashS
             .to_owned();
 
         if let (Some(core), Some(neighbour)) = (&core, &neighbour) {
-            if !neighbour.contains(std::str::from_utf8(&id).unwrap()) && !core.contains(std::str::from_utf8(&id).unwrap()) {
+            if !neighbour.contains(std::str::from_utf8(&id).unwrap())
+                && !core.contains(std::str::from_utf8(&id).unwrap())
+            {
                 continue;
             }
         }
@@ -117,6 +124,9 @@ fn encode(sequence: &[u8]) -> (Vec<u64>, usize) {
 
     for (i, b) in sequence.iter().enumerate() {
         let c = BASE_ENCODING[*b as usize];
+        if c == 255 {
+            panic!("Non-canonical base {} is found in the reads.", *b as char);
+        }
 
         block |= c << ((i << 1) & 63);
         if (i + 1) & 31 == 0 || i == sequence.len() - 1 {
