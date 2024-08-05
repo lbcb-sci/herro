@@ -277,12 +277,14 @@ pub(crate) fn extract_windows<'a>(
 fn get_last_cigar_op(cigar: &[u8]) -> CigarOp {
     let op = cigar[cigar.len() - 1];
 
-    let mut len = 0;
-    let mut idx = 0;
-    while cigar[cigar.len() - idx - 2].is_ascii_digit() {
-        len += (cigar[cigar.len() - idx - 2] - b'0') as u32 * 10u32.pow(idx as u32);
-        idx += 1;
-    }
+    let len = cigar[..cigar.len() - 1]
+        .iter()
+        .rev()
+        .take_while(|c| c.is_ascii_digit())
+        .enumerate()
+        .fold(0, |len, (i, c)| {
+            len + (c - b'0') as u32 * 10u32.pow(i as u32)
+        });
 
     match op {
         b'M' => CigarOp::Match(len),
