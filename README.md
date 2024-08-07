@@ -119,13 +119,13 @@ hifiasm -o <output_prefix> -t <num_threads> --ul <UL_reads> --ul-cut 10000 -1 <p
 
 ## Results on Error-corrected HG002 experimental, high-accuracy, UL data
 
-Experimental high-accuracy, UL HG002 error-corrected reads can be found in the s3 bucket. 
+Experimental high-accuracy, UL HG002 error-corrected reads can be downloaded as below. 
 Raw data used for the error-correction can be found [here](https://labs.epi2me.io/gm24385_ncm23_preview/). Assemblies were done in the same way as in the previous section.
 
 ### Download
   1. Download error-corrected reads:
   ```shell
-  wget http://complex.zesoi.fer.hr/data/downloads/HG002.experimentalUL.corrected.fasta.gz
+  wget -O HG002.experimentalUL.corrected.fasta.gz https://zenodo.org/records/13252378/files/HG002.experimentalUL.corrected.fasta.gz?download=1
   ```
 
 ### Results
