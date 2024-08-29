@@ -33,6 +33,7 @@ rustc-hash = "~1.1.0"
 glob = "~0.3.1"
 zstd = "~0.13.0"
 jemallocator = "~0.5.4"
+tar = "0.4.41"
 
 [dev-dependencies]
 approx = "~0.5.1"

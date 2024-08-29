@@ -2,8 +2,10 @@ use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
-use std::io::{BufWriter, Result};
+use std::io::{BufWriter, Result, Cursor};
 use std::path::Path;
+use std::path::MAIN_SEPARATOR;
+use tar::{Builder, Header};
 
 use crossbeam_channel::Sender;
 
@@ -692,22 +694,39 @@ where
     supporeted
 }
 
-fn output_features<P: AsRef<Path>>(
-    path: P,
+fn output_features(
+    rid: &str,
+    tar_builder: &mut Builder<File>,
     window_id: u16,
     ids: &[&str],
     bases: Array2<u8>,
     quals: Array2<u8>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
-    let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
-    let ids_file = File::create(ids_path)?;
-    let mut ids_writer = BufWriter::new(ids_file);
-    for id in ids {
-        writeln!(&mut ids_writer, "{}", id)?
-    }
+    // output tar file
+    let tar_metadata = tar_builder.get_ref().metadata().unwrap();
 
-    let features_path = path.as_ref().join(format!("{}.features.npy", window_id));
+
+    if window_id > 0 {
+        println!("{},{}", rid, format!("{}{}{}.ids.txt", rid, MAIN_SEPARATOR, window_id));
+    }
+    // strings to write and its path in tar archive
+    let ids_path_in_tar = format!("{}{}{}.ids.txt", rid, MAIN_SEPARATOR, window_id);
+    let ids_string = ids.join("\n");
+
+    // create header metadata for string to write into tar 
+    // -> initialize metadata by copying from the new tar file and modify the size and checksum
+    let mut ids_header = Header::new_gnu();
+    ids_header.set_metadata(&tar_metadata);
+    ids_header.set_size(ids_string.len() as u64);
+    ids_header.set_cksum();
+
+    // write string into tar
+    tar_builder.append_data(&mut ids_header, ids_path_in_tar, ids_string.as_bytes()).unwrap(); 
+
+    
+    ////
+    let features_path_in_tar = format!("{}{}{}.features.npy", rid, MAIN_SEPARATOR, window_id);
 
     // Convert quals to u8 + stack feats
     let quals = quals.mapv(|q| q as u8);
@@ -715,21 +734,44 @@ fn output_features<P: AsRef<Path>>(
 
     // Write feats
     let shape: Vec<_> = features.shape().iter().map(|&s| s as u64).collect();
+    // write npy into buffer
+    let mut npy_buf = vec![];
     let mut writer = npyz::WriteOptions::new()
-        .default_dtype()
-        .shape(&shape)
-        .writer(BufWriter::new(File::create(features_path)?))
-        .begin_nd()?;
+            .default_dtype()
+            .shape(&shape)
+            .writer(&mut npy_buf)
+            .begin_nd()?;
     writer.extend(features.iter())?;
     writer.finish()?;
 
-    let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
+    // create header metadata for npy to write into tar 
+    // -> initialize metadata by copying from the new tar file and modify the size and checksum
+    let mut feat_header = Header::new_gnu();
+    feat_header.set_metadata(&tar_metadata);
+    feat_header.set_size(npy_buf.len() as u64);
+
+    tar_builder.append_data(&mut feat_header, features_path_in_tar, &npy_buf[..]).unwrap();
+    
+    ////
+    npy_buf.clear();
+    let supported_path_in_tar = format!("{}{}{}.supported.npy", rid, MAIN_SEPARATOR, window_id);
+    let mut npy_cursor = Cursor::new(npy_buf);
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
-        .writer(BufWriter::new(File::create(supported_path)?))
+        .writer(&mut npy_cursor)
         .begin_1d()?;
     writer.extend(supported)?;
     writer.finish()?;
+
+    let npy_buf = npy_cursor.into_inner();
+
+    // create header metadata for npy to write into tar 
+    // -> initialize metadata by copying from the new tar file and modify the size and checksum
+    let mut supported_header = Header::new_gnu();
+    supported_header.set_metadata(&tar_metadata);
+    supported_header.set_size(npy_buf.len() as u64);
+
+    tar_builder.append_data(&mut supported_header, supported_path_in_tar, &npy_buf[..]).unwrap();
 
     Ok(())
 }
@@ -751,7 +793,32 @@ pub(crate) trait FeaturesOutput<'a> {
     fn emit(&mut self);
 }
 
-#[derive(Clone)]
+pub(crate) struct ClonableFileWrapper
+{
+    file: File,
+}
+
+impl ClonableFileWrapper
+{
+    pub(crate) fn new<T: AsRef<Path> + Clone>(path: T) -> Self {
+        Self {
+            file: File::create(path).unwrap(),
+        }
+    }
+    
+}
+
+impl Clone for ClonableFileWrapper
+{
+    fn clone(&self) -> Self {
+        Self {
+            file: self.file.try_clone().unwrap(),
+        
+        }
+    }
+}
+
+//#[derive(Clone)]
 pub(crate) struct FeatsGenOutput<'a, T>
 where
     T: AsRef<Path> + Clone,
@@ -759,6 +826,7 @@ where
     base_path: T,
     rname: Option<&'a [u8]>,
     pbar_sender: Sender<PBarNotification>,
+    builder: Option<Builder<File>>,
 }
 
 impl<T> FeatsGenOutput<'_, T>
@@ -770,6 +838,7 @@ where
             base_path: path,
             rname: None,
             pbar_sender: pbar_sender,
+            builder: None,
         }
     }
 }
@@ -783,6 +852,13 @@ where
         'b: 'a,
     {
         self.rname.replace(rname);
+        // replace possible '/' in read_id to '_'
+        create_dir_all(&self.base_path).expect("Cannot create directory");
+        let replaced_rid = std::str::from_utf8(self.rname.unwrap()).unwrap().replace(MAIN_SEPARATOR, "_");
+        let tar_path = self.base_path.as_ref().join(replaced_rid + ".tar");
+        //println!("{}", tar_path.display());
+        let builder = Builder::new(File::create(tar_path).unwrap());
+        self.builder.replace(builder);
     }
 
     fn update(
@@ -795,17 +871,21 @@ where
         ids: Vec<&str>,
         _n_wids: u16,
     ) {
+        
         let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
-        let output_path = self.base_path.as_ref().join(rid);
-        create_dir_all(&output_path).expect("Cannot create directory");
+        //let output_path = self.base_path.as_ref().join(rid);
 
-        output_features(&output_path, wid, &ids, bases, quals, supported.into_iter()).unwrap();
+        output_features(&rid, &mut self.builder.as_mut().unwrap(), wid, &ids, bases, quals, supported.into_iter()).unwrap();
     }
 
     fn emit(&mut self) {
         self.pbar_sender.send(PBarNotification::Inc).unwrap();
 
         self.rname = None;
+
+        self.builder.as_mut().unwrap().finish();
+
+        self.builder = None;
     }
 }
 
