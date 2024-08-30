@@ -26,7 +26,7 @@ if [ ! -d $outdir ]; then
 	mkdir $outdir
 fi
 
-$minimap2 -K8g -cx ava-ont -k25 -w17 -e200 -r150 -m4000 -z200 -t${num_threads} --dual=yes $reads $reads | $batch_script $rids - $outdir
+$minimap2 -K8g -cx ava-ont -k25 -w17 -e200 -r150 -m2500 -z200 -f 0.005 -t${num_threads} --dual=yes $reads $reads | $batch_script $rids - $outdir
 
 
 
