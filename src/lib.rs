@@ -1,5 +1,6 @@
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use features::extract_features;
+use thread_id;
 
 use haec_io::HAECRecord;
 
@@ -16,6 +17,7 @@ use std::{
     io::{prelude::*, BufWriter},
     path::Path,
     thread::{self},
+    fs::create_dir_all,
 };
 
 use crate::{
@@ -63,7 +65,10 @@ pub fn generate_features<T, U, V>(
 
     let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
     let (pbar_sender, pbar_receiver) = unbounded();
+    
+    create_dir_all(&output_path).expect("Cannot create directory");
     thread::scope(|s| {
+            
         let pbar_s = pbar_sender.clone();
         s.spawn(|| {
             alignment_reader(
@@ -79,11 +84,14 @@ pub fn generate_features<T, U, V>(
 
         for _ in 0..threads {
             let pbar_s = pbar_sender.clone();
-
+            
             s.spawn(|| {
                 let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
                 let mut tbuf = vec![0; max_len];
                 let mut qbuf = vec![0; max_len];
+                
+                feats_output.init_tar_builder(thread_id::get());
+                
 
                 loop {
                     let (rid, alns) = match alns_receiver.recv() {
@@ -100,6 +108,7 @@ pub fn generate_features<T, U, V>(
                         &mut feats_output,
                     );
                 }
+                feats_output.cleanup();
             });
         }
 

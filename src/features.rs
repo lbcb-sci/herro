@@ -707,9 +707,9 @@ fn output_features(
     let tar_metadata = tar_builder.get_ref().metadata().unwrap();
 
 
-    if window_id > 0 {
-        println!("{},{}", rid, format!("{}{}{}.ids.txt", rid, MAIN_SEPARATOR, window_id));
-    }
+    //if window_id > 0 {
+    //    println!("{},{}", rid, format!("{}{}{}.ids.txt", rid, MAIN_SEPARATOR, window_id));
+    //}
     // strings to write and its path in tar archive
     let ids_path_in_tar = format!("{}{}{}.ids.txt", rid, MAIN_SEPARATOR, window_id);
     let ids_string = ids.join("\n");
@@ -841,6 +841,21 @@ where
             builder: None,
         }
     }
+
+    pub(crate) fn init_tar_builder(&mut self, identifier: usize)
+    {
+        let tar_path = self.base_path.as_ref().join(format!("{}.tar", identifier));
+        //println!("{}", tar_path.display());
+        let builder = Builder::new(File::create(tar_path).unwrap());
+        self.builder.replace(builder);
+    }
+
+    pub(crate) fn cleanup(&mut self)
+    {
+        self.builder.as_mut().unwrap().finish();
+
+        self.builder = None;
+    }
 }
 
 impl<'a, T> FeaturesOutput<'a> for FeatsGenOutput<'a, T>
@@ -852,13 +867,16 @@ where
         'b: 'a,
     {
         self.rname.replace(rname);
-        // replace possible '/' in read_id to '_'
-        create_dir_all(&self.base_path).expect("Cannot create directory");
-        let replaced_rid = std::str::from_utf8(self.rname.unwrap()).unwrap().replace(MAIN_SEPARATOR, "_");
-        let tar_path = self.base_path.as_ref().join(replaced_rid + ".tar");
-        //println!("{}", tar_path.display());
-        let builder = Builder::new(File::create(tar_path).unwrap());
-        self.builder.replace(builder);
+        
+        /*
+        if self.builder == None {
+            // replace possible '/' in read_id to '_'
+            //let replaced_rid = std::str::from_utf8(self.rname.unwrap()).unwrap().replace(MAIN_SEPARATOR, "_");
+            let tar_path = self.base_path.as_ref().join(format!("{}.tar", self.identifier.unwrap()));
+            //println!("{}", tar_path.display());
+            let builder = Builder::new(File::create(tar_path).unwrap());
+            self.builder.replace(builder);
+        }*/
     }
 
     fn update(
@@ -883,10 +901,11 @@ where
 
         self.rname = None;
 
-        self.builder.as_mut().unwrap().finish();
+        //self.builder.as_mut().unwrap().finish();
 
-        self.builder = None;
+        //self.builder = None;
     }
+
 }
 
 pub(crate) struct InferenceOutput {
