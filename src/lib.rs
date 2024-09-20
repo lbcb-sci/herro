@@ -276,17 +276,26 @@ fn correction_writer<U: AsRef<Path>>(
         };
 
         if seqs.len() == 1 {
-            write!(&mut writer, ">").unwrap();
+            // First line: ">" + id + " " + desc + \n
+            writer.write_all(b">").unwrap();
             writer.write_all(&reads[rid].id).unwrap();
-            write!(&mut writer, "\n").unwrap();
+            writer.write_all(b" ").unwrap();
+            writer
+                .write_all(reads[rid].description.as_ref().unwrap())
+                .unwrap();
+            writer.write_all(b"\n").unwrap();
 
             writer.write_all(&seqs[0]).unwrap();
             write!(&mut writer, "\n").unwrap();
         } else {
             for (i, seq) in seqs.into_iter().enumerate() {
-                write!(&mut writer, ">").unwrap();
+                writer.write_all(b">").unwrap();
                 writer.write_all(&reads[rid].id).unwrap();
-                write!(&mut writer, ":{}\n", i).unwrap();
+                write!(&mut writer, ":{} ", i).unwrap();
+                writer
+                    .write_all(reads[rid].description.as_ref().unwrap())
+                    .unwrap();
+                writer.write_all(b"\n").unwrap();
 
                 writer.write_all(&seq).unwrap();
                 write!(&mut writer, "\n").unwrap();
