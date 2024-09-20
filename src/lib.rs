@@ -7,10 +7,16 @@ use pbars::{
     get_parse_reads_spinner, set_parse_reads_spinner_finish, track_progress, PBarNotification,
 };
 
-use std::{fs::File, io::{prelude::*, BufWriter}, io, path::Path, thread::{self}};
-use std::fs::metadata;
 use glob::glob;
-use rustc_hash::FxHashSet;
+use rustc_hash::FxHashSet as HashSet;
+use std::fs::metadata;
+use std::{
+    fs::File,
+    io,
+    io::{prelude::*, BufWriter},
+    path::Path,
+    thread::{self},
+};
 
 use crate::{
     consensus::consensus_worker,
@@ -29,7 +35,7 @@ mod overlaps;
 mod pbars;
 mod windowing;
 
-pub(crate) const READS_BATCH_SIZE: usize = 100_000;
+pub(crate) const READS_BATCH_SIZE: usize = 50_000;
 pub(crate) const ALN_CHANNEL_CAPACITY: usize = 50_000;
 pub(crate) const LINE_ENDING: u8 = b'\n';
 pub(crate) const INFER_CHANNEL_CAP_FACTOR: usize = 2;
@@ -59,7 +65,17 @@ pub fn generate_features<T, U, V>(
     let (pbar_sender, pbar_receiver) = unbounded();
     thread::scope(|s| {
         let pbar_s = pbar_sender.clone();
-        s.spawn(|| alignment_reader(&reads, &reads_path, &None, aln_mode, threads, alns_sender, pbar_s));
+        s.spawn(|| {
+            alignment_reader(
+                &reads,
+                &reads_path,
+                &None,
+                aln_mode,
+                threads,
+                alns_sender,
+                pbar_s,
+            )
+        });
 
         for _ in 0..threads {
             let pbar_s = pbar_sender.clone();
@@ -119,7 +135,17 @@ pub fn error_correction<T, U, V>(
     let (pbar_sender, pbar_receiver) = unbounded();
     thread::scope(|s| {
         let pbar_s = pbar_sender.clone();
-        s.spawn(|| alignment_reader(&reads, &reads_path, &core, aln_mode, threads, alns_sender, pbar_s));
+        s.spawn(|| {
+            alignment_reader(
+                &reads,
+                &reads_path,
+                &core,
+                aln_mode,
+                threads,
+                alns_sender,
+                pbar_s,
+            )
+        });
         s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
 
         for device in devices {
@@ -175,15 +201,15 @@ pub fn error_correction<T, U, V>(
     });
 }
 
-fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHashSet<String>>) {
+fn read_cluster(cluster_path: &&str) -> (Option<HashSet<String>>, Option<HashSet<String>>) {
     if !cluster_path.is_empty() {
         let file = match File::open(&cluster_path) {
             Ok(file) => file,
             Err(_) => panic!("Failed to open file: {:?}", cluster_path),
         };
         let reader = io::BufReader::new(file);
-        let mut core: FxHashSet<String> = FxHashSet::default();
-        let mut neighbour: FxHashSet<String> = FxHashSet::default();
+        let mut core: HashSet<String> = HashSet::default();
+        let mut neighbour: HashSet<String> = HashSet::default();
         for line in reader.lines() {
             let line = match line {
                 Ok(line) => line,
@@ -191,9 +217,15 @@ fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHas
             };
             let fields: Vec<_> = line.split('\t').collect();
             match fields[0] {
-                "0" => { core.insert(fields[1].to_owned()); }
-                "1" => { neighbour.insert(fields[1].to_owned()); }
-                _ => { panic!("Invalid cluster file"); }
+                "0" => {
+                    core.insert(fields[1].to_owned());
+                }
+                "1" => {
+                    neighbour.insert(fields[1].to_owned());
+                }
+                _ => {
+                    panic!("Invalid cluster file");
+                }
             }
         }
         (Some(core), Some(neighbour))
@@ -202,7 +234,12 @@ fn read_cluster(cluster_path: &&str) -> (Option<FxHashSet<String>>, Option<FxHas
     }
 }
 
-fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<FxHashSet<String>>, neighbour: &Option<FxHashSet<String>>) -> Vec<HAECRecord> {
+fn parse_reads<P: AsRef<Path>>(
+    reads_path: P,
+    window_size: u32,
+    core: &Option<HashSet<String>>,
+    neighbour: &Option<HashSet<String>>,
+) -> Vec<HAECRecord> {
     // Get fastq reads
     let spinner = get_parse_reads_spinner(None);
     let md = metadata(&reads_path).unwrap();
@@ -212,7 +249,8 @@ fn parse_reads<P: AsRef<Path>>(reads_path: P, window_size: u32, core: &Option<Fx
         reads
     } else {
         let g = reads_path.as_ref().join("*").to_str().unwrap().to_owned();
-        let reads : Vec<_> = glob(&g).unwrap()
+        let reads: Vec<_> = glob(&g)
+            .unwrap()
             .filter_map(|p| p.ok().and_then(|path| path.to_str().map(|s| s.to_owned())))
             .filter(|s| s.ends_with(".fastq") || s.ends_with(".fastq.gz"))
             .flat_map(|s| haec_io::get_reads(&s, window_size, core, neighbour))

@@ -16,6 +16,10 @@ const BASE_PADDING: u8 = 11;
 const QUAL_MIN_VAL: f32 = 33.;
 const QUAL_MAX_VAL: f32 = 126.;
 
+const QUAL_RANGE_DIFF: f64 = (QUAL_MAX_VAL - QUAL_MIN_VAL) as f64;
+const QUAL_SCALE: f64 = 2. / QUAL_RANGE_DIFF;
+const QUAL_OFFSET: f64 = 2. * QUAL_MIN_VAL as f64 / QUAL_RANGE_DIFF + 1.;
+
 pub(crate) const BASES_MAP: [u8; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 9, 255, 255,
@@ -82,10 +86,15 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
     let bases = Tensor::full(
         &size,
         BASE_PADDING as i64,
-        (tch::Kind::Int, tch::Device::Cpu),
+        (tch::Kind::Uint8, tch::Device::Cpu),
     );
 
-    let quals = Tensor::ones(&size, (tch::Kind::Float, tch::Device::Cpu));
+    //let quals = Tensor::ones(&size, (tch::Kind::Uint8, tch::Device::Cpu));
+    let quals = Tensor::full(
+        &size,
+        QUAL_MAX_VAL as i64,
+        (tch::Kind::Uint8, tch::Device::Cpu),
+    );
 
     let mut lens = Vec::with_capacity(batch.len());
     let mut indices = Vec::with_capacity(batch.len());
@@ -112,7 +121,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
                 f.quals.as_ptr() as *const u8,
                 &shape,
                 &[shape[shape.len() - 1], 1],
-                tch::Kind::Float,
+                tch::Kind::Uint8,
                 tch::Device::Cpu,
             )
         };
@@ -161,9 +170,12 @@ fn inference(
     model: &CModule,
     device: tch::Device,
 ) -> (Vec<u32>, Vec<Tensor>, Vec<Tensor>) {
+    let quals = batch.quals.to_device_(device, tch::Kind::Float, true, true);
+    let quals = QUAL_SCALE * quals - QUAL_OFFSET;
+
     let inputs = [
-        IValue::Tensor(batch.bases.to(device)),
-        IValue::Tensor(batch.quals.to(device)),
+        IValue::Tensor(batch.bases.to_device_(device, tch::Kind::Int, true, true)),
+        IValue::Tensor(quals),
         IValue::Tensor(batch.lens),
         IValue::TensorList(batch.indices),
     ];
@@ -239,9 +251,6 @@ pub(crate) fn prepare_examples(
         .map(|mut example| {
             // Transform bases (encode) and quals (normalize)
             example.bases.mapv_inplace(|b| BASES_MAP[b as usize]);
-            example
-                .quals
-                .mapv_inplace(|q| 2. * (q - QUAL_MIN_VAL) / (QUAL_MAX_VAL - QUAL_MIN_VAL) - 1.);
 
             // Transpose: [R, L] -> [L, R]
             //bases.swap_axes(1, 0);
@@ -299,7 +308,7 @@ pub(crate) struct WindowExample {
     wid: u16,
     n_alns: u8,
     bases: Array2<u8>,
-    quals: Array2<f32>,
+    quals: Array2<u8>,
     supported: Vec<SupportedPos>,
     n_total_wins: u16,
 }
@@ -310,7 +319,7 @@ impl WindowExample {
         wid: u16,
         n_alns: u8,
         bases: Array2<u8>,
-        quals: Array2<f32>,
+        quals: Array2<u8>,
         supported: Vec<SupportedPos>,
         n_total_wins: u16,
     ) -> Self {

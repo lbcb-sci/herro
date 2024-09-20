@@ -5,18 +5,18 @@ import argparse
 from tqdm import tqdm
 import sys
 
-BATCH_SIZE = 100_000
+BATCH_SIZE = 50_000
 
 
-def batch_reads(input_list, batch_size=100_000):
+def batch_reads(input_list, batch_size):
     for i in range(0, len(input_list), batch_size):
         yield input_list[i:i + batch_size]
 
 
-def create_batches(rids, alns, outdir):
+def create_batches(rids, alns, batch_size, outdir):
     with open(rids, 'r') as f:
         rids = [l.strip() for l in f.readlines()]
-        batches = list(batch_reads(rids))
+        batches = list(batch_reads(rids, batch_size))
 
     with ExitStack() as stack:
         fds = []
@@ -50,12 +50,13 @@ def get_args():
     parser.add_argument("rids", type=str)
     parser.add_argument("alignments", type=str)
     parser.add_argument("outdir", type=str)
+    parser.add_argument("--batch_size", type=int, default=BATCH_SIZE)
     return parser.parse_args()
 
 
 def main():
     args = get_args()
-    create_batches(args.rids, args.alignments, args.outdir)
+    create_batches(args.rids, args.alignments, args.batch_size, args.outdir)
 
 
 if __name__ == "__main__":
