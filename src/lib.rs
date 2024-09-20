@@ -302,7 +302,9 @@ fn write_sequence<W: Write>(
         None => writer.write_all(b" ")?,
     };
 
-    writer.write_all(read.description.as_ref().unwrap())?;
+    if let Some(desc) = read.description.as_ref() {
+        writer.write_all(desc)?;
+    }
     writer.write_all(b"\n")?;
 
     writer.write_all(&seq)?;
