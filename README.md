@@ -33,7 +33,7 @@ conda env create --file scripts/herro-env.yml
     
     1. Download the image
     ```shell
-    wget -O herro.sif https://zenodo.org/records/13148100/files/herro.sif?download=1
+    wget -O herro.sif https://zenodo.org/records/13802680/files/herro.sif?download=1
     ```
     
 

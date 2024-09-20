@@ -1,5 +1,3 @@
-use ordered_float::Pow;
-
 use crate::{
     aligners::{CigarIter, CigarOp},
     overlaps::Overlap,

@@ -220,6 +220,7 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
     }
 }
 
+#[allow(dead_code)]
 fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     //let n_ops = cigar.iter().filter(|c| c.is_ascii_alphabetic()).count();
     let n_ops = cigar.len() / 2;
