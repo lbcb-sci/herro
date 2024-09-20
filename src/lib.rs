@@ -10,6 +10,7 @@ use pbars::{
 use glob::glob;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs::metadata;
+use std::io::Error;
 use std::{
     fs::File,
     io,
@@ -276,32 +277,36 @@ fn correction_writer<U: AsRef<Path>>(
         };
 
         if seqs.len() == 1 {
-            // First line: ">" + id + " " + desc + \n
-            writer.write_all(b">").unwrap();
-            writer.write_all(&reads[rid].id).unwrap();
-            writer.write_all(b" ").unwrap();
-            writer
-                .write_all(reads[rid].description.as_ref().unwrap())
-                .unwrap();
-            writer.write_all(b"\n").unwrap();
-
-            writer.write_all(&seqs[0]).unwrap();
-            write!(&mut writer, "\n").unwrap();
+            write_sequence(&seqs[0], None, &reads[rid], &mut writer).unwrap();
         } else {
             for (i, seq) in seqs.into_iter().enumerate() {
-                writer.write_all(b">").unwrap();
-                writer.write_all(&reads[rid].id).unwrap();
-                write!(&mut writer, ":{} ", i).unwrap();
-                writer
-                    .write_all(reads[rid].description.as_ref().unwrap())
-                    .unwrap();
-                writer.write_all(b"\n").unwrap();
-
-                writer.write_all(&seq).unwrap();
-                write!(&mut writer, "\n").unwrap();
+                write_sequence(&seq, Some(i), &reads[rid], &mut writer).unwrap();
             }
         }
 
         pbar_sender.send(PBarNotification::Inc).unwrap();
     }
+}
+
+fn write_sequence<W: Write>(
+    seq: &[u8],
+    idx: Option<usize>,
+    read: &HAECRecord,
+    writer: &mut W,
+) -> Result<(), Error> {
+    writer.write_all(b">")?;
+    writer.write_all(&read.id)?;
+
+    match idx {
+        Some(idx) => write!(writer, ":{} ", idx)?,
+        None => writer.write_all(b" ")?,
+    };
+
+    writer.write_all(read.description.as_ref().unwrap())?;
+    writer.write_all(b"\n")?;
+
+    writer.write_all(&seq)?;
+    write!(writer, "\n")?;
+
+    Ok(())
 }
