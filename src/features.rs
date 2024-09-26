@@ -1,8 +1,7 @@
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
-use std::fs::{create_dir_all, File};
-use std::io::prelude::*;
-use std::io::{BufWriter, Result, Cursor};
+use std::fs::{File};
+use std::io::{Result, Cursor};
 use std::path::Path;
 use std::path::MAIN_SEPARATOR;
 use tar::{Builder, Header};
@@ -793,31 +792,6 @@ pub(crate) trait FeaturesOutput<'a> {
     fn emit(&mut self);
 }
 
-pub(crate) struct ClonableFileWrapper
-{
-    file: File,
-}
-
-impl ClonableFileWrapper
-{
-    pub(crate) fn new<T: AsRef<Path> + Clone>(path: T) -> Self {
-        Self {
-            file: File::create(path).unwrap(),
-        }
-    }
-    
-}
-
-impl Clone for ClonableFileWrapper
-{
-    fn clone(&self) -> Self {
-        Self {
-            file: self.file.try_clone().unwrap(),
-        
-        }
-    }
-}
-
 //#[derive(Clone)]
 pub(crate) struct FeatsGenOutput<'a, T>
 where
@@ -852,7 +826,7 @@ where
 
     pub(crate) fn cleanup(&mut self)
     {
-        self.builder.as_mut().unwrap().finish();
+        let _ = self.builder.as_mut().unwrap().finish();
 
         self.builder = None;
     }

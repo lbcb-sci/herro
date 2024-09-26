@@ -14,7 +14,7 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::path::Path;
 
-use crate::aligners::{cigar_to_string, CigarOp};
+use crate::aligners::{cigar_to_string};
 use crate::haec_io::bytes_to_u32;
 use crate::haec_io::HAECRecord;
 use crate::mm2;
@@ -220,7 +220,7 @@ pub(crate) fn print_alignments(alignments: &[Alignment], reads: &[HAECRecord]) {
     }
 }
 
-fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
+/*fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     //let n_ops = cigar.iter().filter(|c| c.is_ascii_alphabetic()).count();
     let n_ops = cigar.len() / 2;
     let mut ops = Vec::with_capacity(n_ops);
@@ -242,7 +242,7 @@ fn parse_cigar(cigar: &[u8]) -> Vec<CigarOp> {
     }
 
     ops
-}
+}*/
 
 pub(crate) fn generate_batches<'a, P, T>(
     reads: &'a [HAECRecord],
