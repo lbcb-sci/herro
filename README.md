@@ -55,6 +55,8 @@ conda env create --file scripts/herro-env.yml
     ```
     Path to the resulting binary: ```target/release/herro```
 
+   Building the Singularity image or compiling from source takes just a few minutes on a standard machine.
+
 ## Model Download
 
   1. Download model:
@@ -92,6 +94,10 @@ Note: Read ids can be obtained with seqkit: ```seqkit seq -ni <reads> > <read_id
 herro inference --read-alns <directory_alignment_batches> -t <feat_gen_threads_per_device> -d <gpus> -m <model_path> -b <batch_size> <preprocessed_reads> <fasta_output> 
 ```
 Note: GPUs are specified using their IDs. For example, if the value of the parameter -d is set to 0,1,3, herro will use the first, second, and fourth GPU cards. Parameter ```-t``` is given **per device** - e.g., if ```-t``` is set to ```8``` and 3 GPUs are used, herro will create 24 feature generation theads in total. Recommended batch size is 64 for GPUs with 40 GB (possibly also for 32 GB) of VRAM and 128 for GPUs with 80 GB of VRAM. 
+
+## Demo data
+
+Instructions for downloading and running the demo data can be found [here](https://github.com/lbcb-sci/herro/blob/main/demo/README.txt).
 
 ## Citing HERRO
 
