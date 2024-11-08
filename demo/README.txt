@@ -1,5 +1,5 @@
 1. download test data from https://zenodo.org/records/14048797
-2. run herro, e.g. herro inference -t 4 -m model -d 2,3 -b 32 HG002.chr19_10M_12M.fastq.gz output.fasta
+2. run herro, e.g. herro inference -t 4 -m model_v0.1.pt -d 2,3 -b 32 HG002.chr19_10M_12M.fastq.gz output.fasta
 
 
 
