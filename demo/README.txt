@@ -1,7 +1,10 @@
-1. download test data from https://zenodo.org/records/14048797
-2. run herro, e.g. herro inference -t 4 -m model_v0.1.pt -d 2,3 -b 32 HG002.chr19_10M_12M.fastq.gz output.fasta
+1. download test data: wget -O HG002.chr19_10M_12M.fastq.gz https://zenodo.org/records/14048797/files/HG002.chr19_10M_12M.fastq.gz?download=1
+2. download model: wget -O model_R10_v0.1.pt https://zenodo.org/records/12683277/files/model_v0.1.pt?download=1
+3. run herro: e.g. herro inference -t 4 -m model_R10_v0.1.pt -d 2 -b 32 HG002.chr19_10M_12M.fastq.gz output.fasta
 
 
+Time taken: During our test, the run took arounds 10 minutes with 4 threads, one Tesla V100-SXM2-32GB-LS and batch size 32.   
+Expected output: A file in fasta format of around 80Mb.
 
 ----------------------
 The data is a part of the data from 
