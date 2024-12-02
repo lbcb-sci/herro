@@ -519,70 +519,43 @@ fn calculate_accuracy(window: &OverlapWindow, cigar: &[u8], tseq: &[u8], qseq: &
             op.get_length() as usize
         };
 
-        /*if len == 0 {
-            break;
-        }*/
-        /*assert!(
-            len > 0,
-            "Operation length cannot be 0. {} {} {} {:?} {:?}",
-            window.cigar_start_offset,
-            op.get_length(),
-            std::str::from_utf8(cigar).unwrap(),
-            range,
-            window.cigar_start_idx..window.cigar_end_idx
-        );*/
-        assert!(
-            len <= tseq.len(),
-            "Length {} is bigger than the tseq {}. {} {} {} {:?} {:?}",
-            len,
-            tseq.len(),
-            window.cigar_start_offset,
-            op.get_length(),
-            std::str::from_utf8(cigar).unwrap(),
-            range,
-            window.cigar_start_idx..window.cigar_end_idx
-        );
-        assert!(
-            len <= qseq.len(),
-            "Length {} is bigger than the qseq {}. {} {} {} {:?} {:?}",
-            len,
-            qseq.len(),
-            window.cigar_start_offset,
-            op.get_length(),
-            std::str::from_utf8(cigar).unwrap(),
-            range,
-            window.cigar_start_idx..window.cigar_end_idx
-        );
+        assert!(len > 0, "Operation length cannot be 0");
+
+        // Not insertion -> consume tseq -> check bounds
+        if !matches!(op, CigarOp::Insertion(_)) {
+            assert!(
+                tpos + len <= tseq.len(),
+                "Length {} + {} is bigger than the tseq {}. {} {} {} {:?} {:?}",
+                len,
+                tpos,
+                tseq.len(),
+                window.cigar_start_offset,
+                op.get_length(),
+                std::str::from_utf8(cigar).unwrap(),
+                range,
+                window.cigar_start_idx..window.cigar_end_idx
+            );
+        }
+
+        // Not deletion -> consume qseq -> check bounds
+        if !matches!(op, CigarOp::Deletion(_)) {
+            assert!(
+                qpos + len <= qseq.len(),
+                "Length {} + {} is bigger than the qseq {}. {} {} {} {:?} {:?}",
+                len,
+                qpos,
+                qseq.len(),
+                window.cigar_start_offset,
+                op.get_length(),
+                std::str::from_utf8(cigar).unwrap(),
+                range,
+                window.cigar_start_idx..window.cigar_end_idx
+            );
+        }
 
         match op {
             CigarOp::Match(_) => {
                 for j in 0..len {
-                    assert!(len > 0, "Operation length cannot be 0");
-                    assert!(
-                        j + tpos < tseq.len(),
-                        "Length {} + {} is bigger than the tseq {}. {} {} {} {:?} {:?}",
-                        j,
-                        tpos,
-                        tseq.len(),
-                        window.cigar_start_offset,
-                        op.get_length(),
-                        std::str::from_utf8(cigar).unwrap(),
-                        range,
-                        window.cigar_start_idx..window.cigar_end_idx
-                    );
-                    assert!(
-                        j + qpos < qseq.len(),
-                        "Length {} + {} is bigger than the qseq {}. {} {} {} {:?} {:?}",
-                        j,
-                        qpos,
-                        qseq.len(),
-                        window.cigar_start_offset,
-                        op.get_length(),
-                        std::str::from_utf8(cigar).unwrap(),
-                        range,
-                        window.cigar_start_idx..window.cigar_end_idx
-                    );
-
                     let tbase = tseq[tpos + j];
                     let qbase = qseq[qpos + j];
 
