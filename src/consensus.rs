@@ -1,5 +1,6 @@
 use ndarray::Array2;
 
+use std::ops::Range;
 use std::{cmp::Reverse, collections::BinaryHeap};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -81,7 +82,7 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
+fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<(Range<usize>, Vec<u8>)>> {
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
@@ -98,7 +99,8 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
         MinMax(st, en) => (st, en + 1),
     };
 
-    for window in data[wid_st..wid_en].iter() {
+    let mut curr_seq_start_idx = wid_st;
+    for (idx, window) in data[wid_st..wid_en].iter().enumerate() {
         /*if window.n_alns < 2 {
             let start = wid * window_size;
             let end = ((wid + 1) * window_size).min(uncorrected.len());
@@ -108,8 +110,12 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
         }*/
         if window.n_alns < 2 {
             if corrected.len() > 0 {
-                corrected_seqs.push(corrected);
+                let curr_seq_end_idx = wid_st + idx;
+
+                corrected_seqs.push((curr_seq_start_idx..curr_seq_end_idx, corrected));
+
                 corrected = Vec::new();
+                curr_seq_start_idx = curr_seq_end_idx;
             }
 
             continue;
@@ -217,7 +223,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
     }
 
     if corrected.len() > 0 {
-        corrected_seqs.push(corrected);
+        corrected_seqs.push((curr_seq_start_idx..wid_en, corrected));
     }
 
     Some(corrected_seqs)
@@ -225,7 +231,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
 
 pub(crate) fn consensus_worker(
     receiver: Receiver<ConsensusData>,
-    sender: Sender<(usize, Vec<Vec<u8>>)>,
+    sender: Sender<(usize, Vec<(Range<usize>, Vec<u8>)>)>,
 ) {
     let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];

@@ -11,6 +11,7 @@ use glob::glob;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs::metadata;
 use std::io::Error;
+use std::ops::Range;
 use std::{
     fs::File,
     io,
@@ -18,6 +19,7 @@ use std::{
     path::Path,
     thread::{self},
 };
+use zstd::stream::write;
 
 use crate::{
     consensus::consensus_worker,
@@ -147,7 +149,15 @@ pub fn error_correction<T, U, V>(
                 pbar_s,
             )
         });
-        s.spawn(|| correction_writer(&reads, output_path, writer_receiver, pbar_sender));
+        s.spawn(|| {
+            correction_writer(
+                &reads,
+                output_path,
+                window_size,
+                writer_receiver,
+                pbar_sender,
+            )
+        });
 
         for device in devices {
             let (infer_sender, infer_recv) = bounded(INFER_CHANNEL_CAP_FACTOR * threads);
@@ -264,7 +274,8 @@ fn parse_reads<P: AsRef<Path>>(
 fn correction_writer<U: AsRef<Path>>(
     reads: &[HAECRecord],
     output_path: U,
-    consensus_recv: Receiver<(usize, Vec<Vec<u8>>)>,
+    window_size: u32,
+    consensus_recv: Receiver<(usize, Vec<(Range<usize>, Vec<u8>)>)>,
     pbar_sender: Sender<PBarNotification>,
 ) {
     let file = File::create(output_path).unwrap();
@@ -277,10 +288,12 @@ fn correction_writer<U: AsRef<Path>>(
         };
 
         if seqs.len() == 1 {
-            write_sequence(&seqs[0], None, &reads[rid], &mut writer).unwrap();
+            let (range, seq) = &seqs[0];
+            write_sequence(&seq, None, range, window_size, &reads[rid], &mut writer).unwrap();
         } else {
-            for (i, seq) in seqs.into_iter().enumerate() {
-                write_sequence(&seq, Some(i), &reads[rid], &mut writer).unwrap();
+            for (i, (range, seq)) in seqs.into_iter().enumerate() {
+                write_sequence(&seq, Some(i), &range, window_size, &reads[rid], &mut writer)
+                    .unwrap();
             }
         }
 
@@ -291,6 +304,8 @@ fn correction_writer<U: AsRef<Path>>(
 fn write_sequence<W: Write>(
     seq: &[u8],
     idx: Option<usize>,
+    range: &Range<usize>,
+    window_size: u32,
     read: &HAECRecord,
     writer: &mut W,
 ) -> Result<(), Error> {
@@ -301,6 +316,13 @@ fn write_sequence<W: Write>(
         Some(idx) => write!(writer, ":{} ", idx)?,
         None => writer.write_all(b" ")?,
     };
+
+    write!(
+        writer,
+        "{}-{} ",
+        range.start * window_size as usize,
+        range.end * window_size as usize
+    )?;
 
     if let Some(desc) = read.description.as_ref() {
         writer.write_all(desc)?;
