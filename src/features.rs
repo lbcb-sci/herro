@@ -1,5 +1,7 @@
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
@@ -346,6 +348,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let mut windows = vec![Vec::new(); n_windows];
 
     let mut ovlps_cigar_map = HashMap::default();
+    let mut all_features = Vec::new();
     for alignment in overlaps.iter() {
         let qid = alignment.overlap.return_other_id(rid);
 
@@ -465,7 +468,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             qbuf,
         );
 
-        let qids: Vec<&str> = windows[i]
+        let qids: Vec<_> = windows[i]
             .iter()
             .map(|ow| {
                 std::str::from_utf8(&reads[ow.overlap.return_other_id(rid) as usize].id).unwrap()
@@ -474,11 +477,112 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let supported = get_supported(&bases);
 
-        feats_output.update(
+        /*feats_output.update(
             rid,
             i as u16,
             bases,
             quals,
+            supported,
+            qids,
+            n_windows as u16,
+        );*/
+
+        all_features.push((
+            rid,
+            i as u16,
+            bases,
+            quals,
+            supported,
+            qids,
+            n_windows as u16,
+        ));
+    }
+
+    // Calculate ratios
+    let mut ratios = HashMap::default();
+    for (rid, i, bases, quals, supported, qids, n_windows) in all_features.iter() {
+        let pos_to_idx = bases
+            .slice(s![.., 0])
+            .iter()
+            .enumerate()
+            .filter(|&(_, b)| *b != b'*')
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        let indices = supported
+            .iter()
+            .map(|s| pos_to_idx[s.pos as usize] + s.ins as usize)
+            .collect::<HashSet<_>>();
+
+        let tgt = bases.slice(s![.., 0]);
+
+        for (qid, row_idx) in qids.iter().zip(1..).take(TOP_K) {
+            let qry = bases.slice(s![.., row_idx]);
+
+            for (pos, (tgt_b, qry_b)) in tgt.iter().zip(qry.iter()).enumerate() {
+                if !indices.contains(&pos) {
+                    continue;
+                }
+
+                let t = (*tgt_b as char).to_ascii_uppercase();
+                let q = (*qry_b as char).to_ascii_uppercase();
+
+                if t == '*' {
+                    continue;
+                }
+
+                if q == t {
+                    ratios.entry(qid.to_string()).or_insert((0., 0.)).0 += 1.;
+                } else {
+                    ratios.entry(qid.to_string()).or_insert((0., 0.)).1 += 1.;
+                }
+            }
+        }
+    }
+
+    for (rid, i, bases, quals, supported, qids, n_windows) in all_features {
+        let mut iden = vec![OrderedFloat(f64::MAX)];
+        for &qry_rid in qids.iter().take(TOP_K) {
+            let s = ratios
+                .get(qry_rid)
+                .map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
+
+            iden.push(OrderedFloat(s));
+        }
+
+        let mut sr = (0..iden.len()).collect::<Vec<_>>();
+        sr.sort_by_key(|&i| Reverse(iden[i]));
+
+        let mut new_bases = Vec::new();
+        let mut new_quals = Vec::new();
+
+        for &i in sr.iter() {
+            new_bases.push(bases.index_axis(Axis(1), i));
+            new_quals.push(quals.index_axis(Axis(1), i));
+        }
+        for i in sr.len()..TOP_K + 1 {
+            new_bases.push(bases.index_axis(Axis(1), i));
+            new_quals.push(quals.index_axis(Axis(1), i));
+        }
+
+        assert_eq!(new_bases.len(), TOP_K + 1);
+        assert_eq!(new_quals.len(), TOP_K + 1);
+
+        let new_bases = stack(Axis(1), &new_bases)
+            .unwrap()
+            .as_standard_layout()
+            .to_owned();
+        let new_quals = stack(Axis(1), &new_quals)
+            .unwrap()
+            .as_standard_layout()
+            .to_owned();
+
+        let qids = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
+
+        feats_output.update(
+            rid,
+            i as u16,
+            new_bases,
+            new_quals,
             supported,
             qids,
             n_windows as u16,

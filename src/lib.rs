@@ -193,7 +193,8 @@ pub fn error_correction<T, U, V>(
                 )
             });
 
-            s.spawn(move || consensus_worker(cons_recv, writer_s));
+            let reads_ref = &reads;
+            s.spawn(move || consensus_worker(reads_ref, cons_recv, writer_s));
         }
 
         drop(writer_sender);

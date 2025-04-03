@@ -104,6 +104,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         wids.push(*wid);
         let l = f.bases.len_of(Axis(0));
 
+        assert!(f.quals.is_standard_layout());
         let bt = unsafe {
             let shape: Vec<_> = f.bases.shape().iter().map(|s| *s as i64).collect();
             Tensor::from_blob(
@@ -115,6 +116,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
             )
         };
 
+        assert!(f.quals.is_standard_layout());
         let qt = unsafe {
             let shape: Vec<_> = f.quals.shape().iter().map(|s| *s as i64).collect();
             Tensor::from_blob(
@@ -152,6 +154,24 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
             .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
             .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
+
+        /*if *wid == 0 && f.rid == 133874 {
+            bases
+                .i((idx as i64, ..l as i64, ..))
+                .save("bases.pt")
+                .unwrap();
+
+            Tensor::try_from(&f.bases)
+                .unwrap()
+                .save("bases2.pt")
+                .unwrap();
+            /*quals
+            .i((idx as i64, ..l as i64, ..))
+            .save("quals.pt")
+            .unwrap();*/
+
+            //Tensor::try_from(&tidx).unwrap().save("indices.pt").unwrap();
+        }*/
     }
 
     /*if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
@@ -191,7 +211,7 @@ fn inference(
 
     let info_logits = info_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
     let bases_logits = bases_logits
-        .argmax(1, false)
+        //.argmax(1, false)
         .to(tch::Device::Cpu)
         .split_with_sizes(&lens, 0);
 
