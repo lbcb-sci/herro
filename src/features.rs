@@ -19,7 +19,7 @@ use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
 use crate::windowing::{extract_windows, OverlapWindow};
 
-pub(crate) const TOP_K: usize = 30;
+pub(crate) const TOP_K_SORT: usize = 30;
 
 const BASE_LOWER: [u8; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -49,7 +49,7 @@ fn get_max_ins_for_window(
     window_length: usize,
 ) -> Vec<u16> {
     let mut max_ins = vec![0; window_length];
-    for ow in overlaps.iter().take(TOP_K) {
+    for ow in overlaps.iter() {
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
@@ -288,8 +288,8 @@ fn get_features_for_window(
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
-    let mut bases = Array::from_elem((length, 1 + TOP_K), b'.');
-    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!');
+    let mut bases = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'.');
+    let mut quals = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'!');
 
     // First write the target
     write_target_for_window(
@@ -303,7 +303,7 @@ fn get_features_for_window(
     );
 
     // Write top-k overlaps for the window
-    overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
+    overlaps.iter().enumerate().for_each(|(i, ow)| {
         let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
             bases.index_axis_mut(Axis(1), i + 1),
@@ -323,7 +323,7 @@ fn get_features_for_window(
 
 fn overlap_window_filter(cigar: &[u8]) -> bool {
     let long_indel = CigarIter::new(cigar).any(|(op, _)| match op {
-        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l >= 50 => true,
+        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l >= 30 => true,
         _ => false,
     });
 
@@ -515,7 +515,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let tgt = bases.slice(s![.., 0]);
 
-        for (qid, row_idx) in qids.iter().zip(1..).take(TOP_K) {
+        for (qid, row_idx) in qids.iter().zip(1..) {
             let qry = bases.slice(s![.., row_idx]);
 
             for (pos, (tgt_b, qry_b)) in tgt.iter().zip(qry.iter()).enumerate() {
@@ -541,7 +541,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
     for (rid, i, bases, quals, supported, qids, n_windows) in all_features {
         let mut iden = vec![OrderedFloat(f64::MAX)];
-        for &qry_rid in qids.iter().take(TOP_K) {
+        for &qry_rid in qids.iter() {
             let s = ratios
                 .get(qry_rid)
                 .map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
@@ -555,26 +555,56 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         let mut new_bases = Vec::new();
         let mut new_quals = Vec::new();
 
-        for &i in sr.iter() {
+        for &i in sr.iter().take(TOP_K_SORT + 1) {
             new_bases.push(bases.index_axis(Axis(1), i));
             new_quals.push(quals.index_axis(Axis(1), i));
         }
-        for i in sr.len()..TOP_K + 1 {
+        for i in sr.len()..TOP_K_SORT + 1 {
             new_bases.push(bases.index_axis(Axis(1), i));
             new_quals.push(quals.index_axis(Axis(1), i));
         }
 
-        assert_eq!(new_bases.len(), TOP_K + 1);
-        assert_eq!(new_quals.len(), TOP_K + 1);
+        assert_eq!(new_bases.len(), TOP_K_SORT + 1);
+        assert_eq!(new_quals.len(), TOP_K_SORT + 1);
 
-        let new_bases = stack(Axis(1), &new_bases)
-            .unwrap()
+        let new_bases = stack(Axis(1), &new_bases).unwrap();
+        let retain_idx: Vec<_> = new_bases
+            .axis_iter(Axis(0))
+            .enumerate()
+            .filter_map(|(pos, col)| {
+                let all_gap = col
+                    .iter()
+                    .filter(|&b| *b != b'.')
+                    .all(|&b| b == b'*' || b == b'#');
+                if all_gap {
+                    None
+                } else {
+                    Some(pos)
+                }
+            })
+            .collect();
+
+        let new_bases = new_bases
+            .select(Axis(0), &retain_idx)
             .as_standard_layout()
             .to_owned();
+
+        let new_quals = stack(Axis(1), &new_quals)
+            .unwrap()
+            .select(Axis(0), &retain_idx)
+            .as_standard_layout()
+            .to_owned();
+
+        let supported = get_supported(&new_bases);
+
+        /*let new_bases = stack(Axis(1), &new_bases)
+        .unwrap()
+        .as_standard_layout()
+        .to_owned();
         let new_quals = stack(Axis(1), &new_quals)
             .unwrap()
             .as_standard_layout()
-            .to_owned();
+            .to_owned();*/
 
         let qids = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
 
@@ -692,9 +722,7 @@ fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<SupportedPos>
 where
     S: Data<Elem = u8>,
 {
-    // bases -> [R, L]
-
-    let mut counter: HashMap<u8, u8> = HashMap::default();
+    let mut counter: HashMap<u8, usize> = HashMap::default();
     counter.insert(b'A', 0);
     counter.insert(b'C', 0);
     counter.insert(b'G', 0);
@@ -721,9 +749,10 @@ where
             *counter.get_mut(&BASE_FORWARD[b as usize]).unwrap() += 1;
         });
 
+        let thresh = (bases.len_of(Axis(1)) as f64 * 0.1) as usize;
         let n_supported = counter
             .iter()
-            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
+            .fold(0u8, |acc, (_, &c)| if c >= thresh { acc + 1 } else { acc });
         if n_supported >= 2 {
             supporeted.push(SupportedPos::new(tpos as u16, ins));
         }
@@ -922,7 +951,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         self.features.push(WindowExample::new(
             rid,
             wid,
-            ids.len().min(TOP_K) as u8,
+            ids.len().min(TOP_K_SORT) as u8,
             bases,
             quals,
             supported,
