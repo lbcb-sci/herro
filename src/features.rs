@@ -323,7 +323,7 @@ fn get_features_for_window(
 
 fn overlap_window_filter(cigar: &[u8]) -> bool {
     let long_indel = CigarIter::new(cigar).any(|(op, _)| match op {
-        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l >= 30 => true,
+        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l > 50 => true,
         _ => false,
     });
 
