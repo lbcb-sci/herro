@@ -125,6 +125,8 @@ pub fn error_correction<T, U, V>(
     U: AsRef<Path> + Send + Sync,
     V: AsRef<Path> + Send,
 {
+    let devices = prepare_cuda_devices(&devices);
+
     tch::set_num_threads(1);
 
     let (core, neighbour) = read_cluster(&cluster_path);
@@ -312,4 +314,47 @@ fn write_sequence<W: Write>(
     write!(writer, "\n")?;
 
     Ok(())
+}
+
+fn prepare_cuda_devices(devices: &[usize]) -> Vec<usize> {
+    // Try to read CUDA_VISIBLE_DEVICES
+    if let Ok(cvd) = std::env::var("CUDA_VISIBLE_DEVICES") {
+        // CUDA_VISIBLE_DEVICES is set, map real device IDs to logical
+        let map: Vec<usize> = cvd
+            .split(',')
+            .filter_map(|s| s.trim().parse::<usize>().ok())
+            .collect();
+
+        // For each requested device, find its index in the mask
+        let mapped: Vec<usize> = devices
+            .iter()
+            .map(|dev| {
+                map.iter()
+                    .position(|&d| d == *dev)
+                    .unwrap_or_else(|| panic!("Device {} not in CUDA_VISIBLE_DEVICES={}", dev, cvd))
+            })
+            .collect();
+
+        println!(
+            "Using CUDA_VISIBLE_DEVICES='{}'; mapped devices {:?} to logical IDs {:?}",
+            cvd, devices, mapped
+        );
+        mapped
+    } else {
+        // Not set; set CUDA_VISIBLE_DEVICES to requested devices
+        let device_list = devices
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        std::env::set_var("CUDA_VISIBLE_DEVICES", &device_list);
+
+        println!(
+            "Set CUDA_VISIBLE_DEVICES='{}' (for requested devices {:?})",
+            device_list, devices
+        );
+
+        // Logical IDs match order of requested devices
+        (0..devices.len()).collect()
+    }
 }
