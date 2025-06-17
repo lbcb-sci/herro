@@ -251,13 +251,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
                 });
         }
 
-        /*println!(
-            "Device {}, in: {}, out: {}",
-            d,
-            input_channel.len(),
-            output_channel.len()
-        );*/
-
         output_channel.send(data.consensus_data).unwrap();
     }
 }
