@@ -355,6 +355,11 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let output_path = format!("{}.txt", tname);
     let mut file = std::fs::File::create(&output_path).expect("Cannot create overlap windows file");
 
+    writeln!(
+        file,
+        "wid\tqname\ttstart\ttend\tqstart\ttqend\tcstart_idx\tcend_idx\tcstart_offset\tcend_offset"
+    )
+    .expect("Cannot write header to overlap windows file");
     for (window_idx, window_overlaps) in windows.iter().enumerate() {
         for ow in window_overlaps.iter() {
             let qid = ow.overlap.qid;

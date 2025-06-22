@@ -65,6 +65,8 @@ pub(crate) fn extract_windows_new<'a>(
     let mut windows = vec![Vec::new(); n_windows];
     let mut counts = HashMap::default();
 
+    target.seq.get_sequence(tbuf);
+
     for alignment in alignments {
         let (aln_wins, diffs) =
             extract_windows_from_alignment(alignment, &mut counts, reads, tbuf, qbuf, window_size);
@@ -112,19 +114,20 @@ fn extract_windows_from_alignment<'a>(
     alignment: &'a Alignment,
     counts: &mut HashMap<(u32, u16), [u32; 5]>,
     reads: &[HAECRecord],
-    tbuf: &mut [u8],
+    tbuf: &[u8],
     qbuf: &mut [u8],
     window_size: u32,
 ) -> (HashMap<u32, OverlapWindow<'a>>, HashSet<(u32, u16)>) {
     let mut wins = HashMap::default();
     let mut diffs = HashSet::default();
 
-    let mut win_state = WinState::new(0, 0, u32::MAX, u32::MAX, usize::MAX, u32::MAX);
-
-    // Load target into buffer
-    reads[alignment.overlap.tid as usize].seq.get_subseq(
-        alignment.overlap.tstart as usize..alignment.overlap.tend as usize,
-        tbuf,
+    let mut win_state = WinState::new(
+        alignment.overlap.tstart,
+        0,
+        u32::MAX,
+        u32::MAX,
+        usize::MAX,
+        u32::MAX,
     );
 
     // Load query into buffer
@@ -247,7 +250,7 @@ fn extract_windows_from_alignment<'a>(
         wins.insert(win_state.tpos / window_size, ow);
     }
 
-    assert!(win_state.tpos == alignment.overlap.tend - alignment.overlap.tstart);
+    assert!(win_state.tpos == alignment.overlap.tend);
     assert!(win_state.qpos == alignment.overlap.qend - alignment.overlap.qstart);
 
     (wins, diffs)
