@@ -1,12 +1,21 @@
+use std::ops::Range;
+use std::u32;
+
+use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+
+use crate::haec_io::BASE_ENCODING;
 use crate::{
     aligners::{CigarIter, CigarOp},
-    overlaps::Overlap,
+    haec_io::HAECRecord,
+    overlaps::{Alignment, Overlap, Strand},
 };
 
 #[derive(Clone, Debug)]
 pub struct OverlapWindow<'a> {
     pub overlap: &'a Overlap,
     pub tstart: u32,
+    pub tend: u32,
     pub qstart: u32,
     pub qend: u32,
     pub cigar_start_idx: usize,
@@ -19,6 +28,7 @@ impl<'a> OverlapWindow<'a> {
     pub fn new(
         overlap: &'a Overlap,
         tstart: u32,
+        tend: u32,
         qstart: u32,
         qend: u32,
         cigar_start_idx: usize,
@@ -29,6 +39,7 @@ impl<'a> OverlapWindow<'a> {
         OverlapWindow {
             overlap,
             tstart,
+            tend,
             qstart,
             qend,
             cigar_start_idx,
@@ -41,6 +52,267 @@ impl<'a> OverlapWindow<'a> {
 
 type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 
+pub(crate) fn extract_windows_new<'a>(
+    tid: u32,
+    alignments: &'a [Alignment],
+    reads: &[HAECRecord],
+    window_size: u32,
+    (tbuf, qbuf): (&mut [u8], &mut [u8]),
+) -> Windows<'a> {
+    let target = &reads[tid as usize];
+
+    let n_windows = (target.seq.len() + window_size as usize - 1) / window_size as usize;
+    let mut windows = vec![Vec::new(); n_windows];
+    let mut counts = HashMap::default();
+
+    for alignment in alignments {
+        let (aln_wins, diffs) =
+            extract_windows_from_alignment(alignment, &mut counts, reads, tbuf, qbuf, window_size);
+
+        aln_wins
+            .into_iter()
+            .for_each(|(idx, ow)| windows[idx as usize].push(ow));
+    }
+
+    // This function is a placeholder for the actual implementation.
+    // It should return a new instance of Windows.
+    windows
+}
+
+struct WinState {
+    tpos: u32,               // tpos
+    qpos: u32,               // qpos
+    t_win_start: u32,        // t_win_start
+    q_win_start: u32,        // q_win_start
+    cigar_start_idx: usize,  // cigar_start_idx
+    cigar_start_offset: u32, // cigar_start_offset
+}
+
+impl WinState {
+    pub fn new(
+        tpos: u32,
+        qpos: u32,
+        t_win_start: u32,
+        q_win_start: u32,
+        cigar_start_idx: usize,
+        cigar_start_offset: u32,
+    ) -> Self {
+        WinState {
+            tpos,
+            qpos,
+            t_win_start,
+            q_win_start,
+            cigar_start_idx,
+            cigar_start_offset,
+        }
+    }
+}
+
+fn extract_windows_from_alignment<'a>(
+    alignment: &'a Alignment,
+    counts: &mut HashMap<(u32, u16), [u32; 5]>,
+    reads: &[HAECRecord],
+    tbuf: &mut [u8],
+    qbuf: &mut [u8],
+    window_size: u32,
+) -> (HashMap<u32, OverlapWindow<'a>>, HashSet<(u32, u16)>) {
+    let mut wins = HashMap::default();
+    let mut diffs = HashSet::default();
+
+    let mut win_state = WinState::new(0, 0, u32::MAX, u32::MAX, usize::MAX, u32::MAX);
+
+    // Load target into buffer
+    reads[alignment.overlap.tid as usize].seq.get_subseq(
+        alignment.overlap.tstart as usize..alignment.overlap.tend as usize,
+        tbuf,
+    );
+
+    // Load query into buffer
+    if alignment.overlap.strand == Strand::Forward {
+        reads[alignment.overlap.qid as usize].seq.get_subseq(
+            alignment.overlap.qstart as usize..alignment.overlap.qend as usize,
+            qbuf,
+        );
+    } else {
+        reads[alignment.overlap.qid as usize].seq.get_rc_subseq(
+            alignment.overlap.qstart as usize..alignment.overlap.qend as usize,
+            qbuf,
+        );
+    }
+
+    let zeroth_window_thresh = (0.1 * window_size as f32) as u32;
+    let last_window_thresh = alignment.overlap.tlen - zeroth_window_thresh;
+
+    if win_state.tpos % window_size == 0 || win_state.tpos < zeroth_window_thresh {
+        win_state.t_win_start = 0;
+        win_state.q_win_start = 0;
+        win_state.cigar_start_idx = 0;
+        win_state.cigar_start_offset = 0;
+    }
+
+    let mut cigar_iter = CigarIter::new(&alignment.cigar).peekable();
+    while let Some((op, range)) = cigar_iter.next() {
+        match op {
+            CigarOp::Match(l) => {
+                for i in 0..l {
+                    let tbase = tbuf[(win_state.tpos + i) as usize];
+                    let qbase = qbuf[(win_state.qpos + i) as usize];
+                    counts.entry((win_state.tpos + i, 0)).or_default()
+                        [BASE_ENCODING[qbase as usize] as usize] += 1;
+
+                    if tbase != qbase {
+                        diffs.insert((win_state.tpos + i, 0));
+                    };
+
+                    if (win_state.tpos + i + 1) % window_size == 0 {
+                        if let Some(ow) = emit_window_check(
+                            i,
+                            op,
+                            &range,
+                            cigar_iter.peek(),
+                            &mut win_state,
+                            &alignment.overlap,
+                        ) {
+                            wins.insert(win_state.tpos / window_size, ow);
+                        }
+                    }
+                }
+
+                win_state.tpos += l;
+                win_state.qpos += l;
+            }
+            CigarOp::Deletion(l) => {
+                for i in 0..l {
+                    counts.entry((win_state.tpos + i, 0)).or_default()[4] += 1;
+                    diffs.insert((win_state.tpos + i, 0));
+
+                    if (win_state.tpos + i + 1) % window_size == 0 {
+                        if let Some(ow) = emit_window_check(
+                            i,
+                            op,
+                            &range,
+                            cigar_iter.peek(),
+                            &mut win_state,
+                            &alignment.overlap,
+                        ) {
+                            wins.insert(win_state.tpos / window_size, ow);
+                        }
+                    }
+                }
+
+                win_state.tpos += l;
+            }
+            CigarOp::Insertion(l) => {
+                // TODO indels >= 256
+                for ins in 0..l as u16 {
+                    let qbase = qbuf[(win_state.qpos + ins as u32) as usize];
+                    counts.entry((win_state.tpos, ins)).or_default()
+                        [BASE_ENCODING[qbase as usize] as usize] += 1;
+
+                    diffs.insert((win_state.tpos, ins as u16));
+                }
+
+                if win_state.tpos % window_size == 0 {
+                    if let Some(ow) = emit_window_check(
+                        l - 1,
+                        op,
+                        &range,
+                        cigar_iter.peek(),
+                        &mut win_state,
+                        &alignment.overlap,
+                    ) {
+                        wins.insert((win_state.tpos - 1) / window_size, ow);
+                    }
+                }
+
+                win_state.qpos += l;
+            }
+            _ => panic!("Invalid CIGAR operation encountered"),
+        }
+    }
+
+    if win_state.tpos > last_window_thresh && win_state.tpos % window_size != 0 {
+        let ow = OverlapWindow::new(
+            &alignment.overlap,
+            win_state.t_win_start,
+            win_state.tpos,
+            win_state.q_win_start,
+            win_state.qpos,
+            win_state.cigar_start_idx,
+            win_state.cigar_start_offset,
+            alignment.cigar.len(),
+            get_last_cigar_op(&alignment.cigar).get_length(),
+        );
+
+        wins.insert(win_state.tpos / window_size, ow);
+    }
+
+    assert!(win_state.tpos == alignment.overlap.tend - alignment.overlap.tstart);
+    assert!(win_state.qpos == alignment.overlap.qend - alignment.overlap.qstart);
+
+    (wins, diffs)
+}
+
+fn emit_window_check<'a>(
+    curr_idx: u32,
+    curr_op: CigarOp,
+    range: &Range<usize>,
+    next_op: Option<&(CigarOp, Range<usize>)>,
+    win_state: &mut WinState,
+    overlap: &'a Overlap,
+) -> Option<OverlapWindow<'a>> {
+    let op_len = curr_op.get_length() as u32;
+    let is_ins_next = next_op.map_or(false, |(op, _)| matches!(op, CigarOp::Insertion(_)));
+
+    if curr_idx + 1 == op_len && is_ins_next {
+        // Emit the window in the insertion block
+        return None;
+    }
+
+    let (t_win_end, q_win_end) = match curr_op {
+        CigarOp::Match(_) => (win_state.tpos + curr_idx + 1, win_state.qpos + curr_idx + 1),
+        CigarOp::Insertion(_) => (win_state.tpos, win_state.qpos + curr_idx + 1),
+        CigarOp::Deletion(_) => (win_state.tpos + curr_idx + 1, win_state.qpos),
+        CigarOp::Mismatch(_) => panic!("Mismatch not supported in emit_window"),
+    };
+
+    let (cigar_end_idx, cigar_end_offset) = if curr_idx + 1 == op_len {
+        (range.end, op_len as u32)
+    } else {
+        (range.end, curr_idx + 1)
+    };
+
+    // Only emit if the window has a valid start
+    let ow = if win_state.cigar_start_idx != usize::MAX {
+        Some(OverlapWindow::new(
+            overlap,
+            win_state.t_win_start,
+            t_win_end,
+            win_state.q_win_start,
+            q_win_end,
+            win_state.cigar_start_idx,
+            win_state.cigar_start_offset,
+            cigar_end_idx,
+            cigar_end_offset,
+        ))
+    } else {
+        None
+    };
+
+    win_state.t_win_start = t_win_end;
+    win_state.q_win_start = q_win_end;
+    if curr_idx + 1 == op_len {
+        win_state.cigar_start_idx = cigar_end_idx;
+        win_state.cigar_start_offset = 0;
+    } else {
+        win_state.cigar_start_idx = range.start;
+        win_state.cigar_start_offset = cigar_end_offset;
+    };
+
+    ow
+}
+
+/*
 pub(crate) fn extract_windows<'a>(
     windows: &mut Windows<'a>,
     overlap: &'a Overlap,
@@ -160,7 +432,6 @@ pub(crate) fn extract_windows<'a>(
             if cigar_start_idx.is_some() {
                 windows[(current_w + i) as usize - 1].push(OverlapWindow::new(
                     overlap,
-                    t_window_start.unwrap(),
                     q_window_start.unwrap(),
                     q_start_new,
                     cigar_start_idx.unwrap(),
@@ -232,7 +503,6 @@ pub(crate) fn extract_windows<'a>(
         if cigar_start_idx.is_some() {
             windows[new_w as usize - 1].push(OverlapWindow::new(
                 overlap,
-                t_window_start.unwrap(),
                 q_window_start.unwrap(),
                 qend,
                 cigar_start_idx.unwrap(),
@@ -261,7 +531,6 @@ pub(crate) fn extract_windows<'a>(
     if tpos > nth_window_thresh && tpos % window_size != 0 {
         windows[last_window as usize - 1].push(OverlapWindow::new(
             overlap,
-            t_window_start.unwrap(),
             q_window_start.unwrap(),
             qpos,
             cigar_start_idx.unwrap(),
@@ -270,7 +539,7 @@ pub(crate) fn extract_windows<'a>(
             get_last_cigar_op(&cigar).get_length(),
         ));
     }
-}
+}*/
 
 fn get_last_cigar_op(cigar: &[u8]) -> CigarOp {
     let op = cigar[cigar.len() - 1];

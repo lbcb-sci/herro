@@ -17,7 +17,8 @@ use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData, WindowExample};
 use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
-use crate::windowing::{extract_windows, OverlapWindow};
+use crate::windowing::extract_windows_new;
+use crate::windowing::OverlapWindow;
 
 pub(crate) const TOP_K_SORT: usize = 30;
 
@@ -345,45 +346,49 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
     // Get overlaps for windows
     let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
-    let mut windows = vec![Vec::new(); n_windows];
+    //let mut windows = vec![Vec::new(); n_windows];
 
-    let mut ovlps_cigar_map = HashMap::default();
-    let mut all_features = Vec::new();
-    for alignment in overlaps.iter() {
-        let qid = alignment.overlap.return_other_id(rid);
+    let mut windows = extract_windows_new(rid, &overlaps, reads, window_size, (tbuf, qbuf));
 
-        // TODO - Remove this if unecessary
-        /*let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
+    // Store all overlap windows to a file for debugging/analysis
+    let tname = std::str::from_utf8(&read.id).unwrap();
+    let output_path = format!("{}.txt", tname);
+    let mut file = std::fs::File::create(&output_path).expect("Cannot create overlap windows file");
 
-        // TODO - get proper target and query
-        let (tstart, tend, qstart, qend) = if overlap.tid == rid {
-            (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
-        } else {
-            (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
-        };
-
-        let tlen = tend as usize - tstart as usize;
-        reads[rid as usize]
-            .seq
-            .get_subseq(tstart as usize..tend as usize, tbuf);
-
-        let qlen = qend as usize - qstart as usize;
-        if overlaps::Strand::Forward == overlap.strand {
-            reads[qid as usize]
-                .seq
-                .get_subseq(qstart as usize..qend as usize, qbuf);
-        } else {
-            reads[qid as usize]
-                .seq
-                .get_rc_subseq(qstart as usize..qend as usize, qbuf);
+    for (window_idx, window_overlaps) in windows.iter().enumerate() {
+        for ow in window_overlaps.iter() {
+            let qid = ow.overlap.qid;
+            writeln!(
+                file,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                window_idx,
+                std::str::from_utf8(&reads[qid as usize].id).unwrap(),
+                ow.tstart,
+                ow.tend,
+                ow.qstart,
+                ow.qend,
+                ow.cigar_start_idx,
+                ow.cigar_end_idx,
+                ow.cigar_start_offset,
+                ow.cigar_end_offset,
+            )
+            .unwrap();
         }
-        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]); */
+    }
 
-        let (tshift, qshift) = (0, 0);
+    return;
+
+    let ovlps_cigar_map = overlaps
+        .iter()
+        .map(|a| (a.overlap.qid, &a.cigar))
+        .collect::<HashMap<u32, &Vec<u8>>>();
+    let mut all_features = Vec::new();
+    /*for alignment in overlaps.iter() {
+        let qid = alignment.overlap.return_other_id(rid);
 
         //Extract windows
         let is_target = alignment.overlap.tid == rid;
-        extract_windows(
+        extract_windows_new(
             &mut windows,
             &alignment.overlap,
             &alignment.cigar,
@@ -394,7 +399,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         );
 
         ovlps_cigar_map.insert(qid, &alignment.cigar);
-    }
+    }*/
 
     // Create directory for the read
     //let output_path = Path::new("features").join(&read.id);
