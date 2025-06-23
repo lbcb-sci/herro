@@ -1,8 +1,8 @@
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
-use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
+use std::hash::Hash;
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
 use std::path::Path;
@@ -18,6 +18,7 @@ use crate::inference::{prepare_examples, InferenceData, WindowExample};
 use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
 use crate::windowing::extract_windows_new;
+use crate::windowing::AlnFeatsInfo;
 use crate::windowing::OverlapWindow;
 
 pub(crate) const TOP_K_SORT: usize = 30;
@@ -342,46 +343,137 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     feats_output: &mut T,
 ) {
     let read = &reads[rid as usize];
+    read.seq.get_sequence(tbuf);
+
+    let (aln_feats_info, counts) = extract_windows_new(&overlaps, reads, window_size, (tbuf, qbuf));
+
+    let tname = std::str::from_utf8(&read.id).unwrap();
+    let scores = score_alignments(&overlaps, &aln_feats_info, counts, tname, reads);
+}
+
+fn score_alignments(
+    alignments: &[Alignment],
+    aln_feats_info: &[AlnFeatsInfo],
+    counts: HashMap<(u32, u16), [u32; 5]>,
+    tname: &str,
+    reads: &[HAECRecord],
+) -> HashMap<u32, f32> {
+    let mut candidates = find_all_candidates(counts);
+    candidates.sort_unstable();
+
+    let output_path = format!("{}.txt", tname);
+    let mut file = std::fs::File::create(&output_path).expect("Cannot create overlap windows file");
+
+    let scores = alignments
+        .iter()
+        .zip(aln_feats_info.iter())
+        .map(|(a, feats_info)| {
+            let qid = a.overlap.qid;
+            let qname = std::str::from_utf8(&reads[qid as usize].id).unwrap();
+
+            let start = candidates.partition_point(|&x| x < (feats_info.first_win_tstart, 0));
+            let end = candidates.partition_point(|&x| x < (feats_info.last_win_tend, 0));
+
+            let cset = HashSet::from_iter(candidates[start..end].iter().cloned());
+            let n_diff = feats_info.diffs.intersection(&cset).count();
+
+            let n_candidates = end - start;
+            if n_diff > n_candidates {
+                let mut diffs_cands_sorted =
+                    feats_info.diffs.intersection(&cset).collect::<Vec<_>>();
+                diffs_cands_sorted.sort_unstable();
+
+                println!(
+                    "{tname}:{qname} {}-{}, {}-{}",
+                    a.overlap.tstart,
+                    a.overlap.tend,
+                    feats_info.first_win_tstart,
+                    feats_info.last_win_tend
+                );
+                for pos in diffs_cands_sorted {
+                    println!("{:?}", pos);
+                }
+
+                println!();
+
+                for pos in &candidates[start..end] {
+                    println!("{:?}", pos);
+                }
+            }
+            assert!(
+                n_diff <= n_candidates,
+                "{tname}:{qname} n_diff {n_diff} cannot be bigger than n_candidates {n_candidates}"
+            );
+
+            if n_candidates == 0 {
+                writeln!(file, "{}\t{}\t{}\t{}", qname, n_diff, n_candidates, 0.0)
+                    .expect("Cannot write to overlap windows file");
+
+                return (qid, 0.0);
+            }
+
+            let score = (n_candidates - n_diff) as f32 / n_candidates as f32
+                * f32::ln(n_candidates as f32 + 1.);
+
+            writeln!(file, "{}\t{}\t{}\t{}", qname, n_diff, n_candidates, score)
+                .expect("Cannot write to overlap windows file");
+
+            (qid, score)
+        })
+        .collect();
+
+    scores
+}
+
+fn find_all_candidates(counts: HashMap<(u32, u16), [u32; 5]>) -> Vec<(u32, u16)> {
+    let n_alns_per_pos = counts
+        .iter()
+        .filter_map(|(pos, c)| {
+            if pos.1 == 0 {
+                Some((pos.0, c.iter().sum::<u32>()))
+            } else {
+                None
+            }
+        })
+        .collect::<HashMap<_, _>>();
+
+    let candidates = counts
+        .into_iter()
+        .filter_map(|(pos, mut c)| {
+            if pos.1 != 0 {
+                let n_alns = *n_alns_per_pos.get(&pos.0).unwrap();
+                let diff = n_alns - c.iter().sum::<u32>();
+                c[4] += diff;
+            }
+
+            if c.into_iter().filter(|&count| count >= 3).count() >= 2 {
+                Some(pos)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    candidates
+}
+
+/*pub(crate) fn extract_features_old<'a, T: FeaturesOutput<'a>>(
+    rid: u32,
+    reads: &'a [HAECRecord],
+    overlaps: Vec<Alignment>,
+    window_size: u32,
+    (tbuf, qbuf): (&mut [u8], &mut [u8]),
+    feats_output: &mut T,
+) {
+    let read = &reads[rid as usize];
     reads[rid as usize].seq.get_sequence(tbuf);
 
     // Get overlaps for windows
     let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
     //let mut windows = vec![Vec::new(); n_windows];
 
-    let mut windows = extract_windows_new(rid, &overlaps, reads, window_size, (tbuf, qbuf));
-
-    // Store all overlap windows to a file for debugging/analysis
-    let tname = std::str::from_utf8(&read.id).unwrap();
-    let output_path = format!("{}.txt", tname);
-    let mut file = std::fs::File::create(&output_path).expect("Cannot create overlap windows file");
-
-    writeln!(
-        file,
-        "wid\tqname\ttstart\ttend\tqstart\ttqend\tcstart_idx\tcend_idx\tcstart_offset\tcend_offset"
-    )
-    .expect("Cannot write header to overlap windows file");
-    for (window_idx, window_overlaps) in windows.iter().enumerate() {
-        for ow in window_overlaps.iter() {
-            let qid = ow.overlap.qid;
-            writeln!(
-                file,
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                window_idx,
-                std::str::from_utf8(&reads[qid as usize].id).unwrap(),
-                ow.tstart,
-                ow.tend,
-                ow.qstart,
-                ow.qend,
-                ow.cigar_start_idx,
-                ow.cigar_end_idx,
-                ow.cigar_start_offset,
-                ow.cigar_end_offset,
-            )
-            .unwrap();
-        }
-    }
-
-    return;
+    let (mut windows, counts, diffs) =
+        extract_windows_new(rid, &overlaps, reads, window_size, (tbuf, qbuf));
 
     let ovlps_cigar_map = overlaps
         .iter()
@@ -630,7 +722,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     }
 
     feats_output.emit();
-}
+}*/
 
 fn calculate_accuracy(window: &OverlapWindow, cigar: &[u8], tseq: &[u8], qseq: &[u8]) -> f32 {
     let (mut tpos, mut qpos) = (0, 0);

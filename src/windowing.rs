@@ -53,32 +53,24 @@ impl<'a> OverlapWindow<'a> {
 type Windows<'a> = Vec<Vec<OverlapWindow<'a>>>;
 
 pub(crate) fn extract_windows_new<'a>(
-    tid: u32,
     alignments: &'a [Alignment],
     reads: &[HAECRecord],
     window_size: u32,
-    (tbuf, qbuf): (&mut [u8], &mut [u8]),
-) -> Windows<'a> {
-    let target = &reads[tid as usize];
+    (tbuf, qbuf): (&[u8], &mut [u8]),
+) -> (Vec<AlnFeatsInfo<'a>>, HashMap<(u32, u16), [u32; 5]>) {
+    let mut counts: HashMap<(u32, u16), [u32; 5]> = HashMap::default();
 
-    let n_windows = (target.seq.len() + window_size as usize - 1) / window_size as usize;
-    let mut windows = vec![Vec::new(); n_windows];
-    let mut counts = HashMap::default();
+    let aln_feats_info = alignments
+        .iter()
+        .map(|a| {
+            let aln_feats_info =
+                extract_windows_from_alignment(a, &mut counts, reads, tbuf, qbuf, window_size);
 
-    target.seq.get_sequence(tbuf);
+            aln_feats_info
+        })
+        .collect::<Vec<_>>();
 
-    for alignment in alignments {
-        let (aln_wins, diffs) =
-            extract_windows_from_alignment(alignment, &mut counts, reads, tbuf, qbuf, window_size);
-
-        aln_wins
-            .into_iter()
-            .for_each(|(idx, ow)| windows[idx as usize].push(ow));
-    }
-
-    // This function is a placeholder for the actual implementation.
-    // It should return a new instance of Windows.
-    windows
+    (aln_feats_info, counts)
 }
 
 struct WinState {
@@ -110,6 +102,29 @@ impl WinState {
     }
 }
 
+pub(crate) struct AlnFeatsInfo<'a> {
+    pub windows: HashMap<u32, OverlapWindow<'a>>,
+    pub first_win_tstart: u32,
+    pub last_win_tend: u32,
+    pub diffs: HashSet<(u32, u16)>,
+}
+
+impl<'a> AlnFeatsInfo<'a> {
+    pub fn new(
+        windows: HashMap<u32, OverlapWindow<'a>>,
+        first_win_tstart: u32,
+        last_win_tend: u32,
+        diffs: HashSet<(u32, u16)>,
+    ) -> Self {
+        AlnFeatsInfo {
+            windows,
+            first_win_tstart,
+            last_win_tend,
+            diffs,
+        }
+    }
+}
+
 fn extract_windows_from_alignment<'a>(
     alignment: &'a Alignment,
     counts: &mut HashMap<(u32, u16), [u32; 5]>,
@@ -117,7 +132,7 @@ fn extract_windows_from_alignment<'a>(
     tbuf: &[u8],
     qbuf: &mut [u8],
     window_size: u32,
-) -> (HashMap<u32, OverlapWindow<'a>>, HashSet<(u32, u16)>) {
+) -> AlnFeatsInfo<'a> {
     let mut wins = HashMap::default();
     let mut diffs = HashSet::default();
 
@@ -146,8 +161,10 @@ fn extract_windows_from_alignment<'a>(
     let zeroth_window_thresh = (0.1 * window_size as f32) as u32;
     let last_window_thresh = alignment.overlap.tlen - zeroth_window_thresh;
 
+    let mut first_win_tstart = u32::MAX;
+    let mut last_win_tend = u32::MAX;
     if win_state.tpos % window_size == 0 || win_state.tpos < zeroth_window_thresh {
-        win_state.t_win_start = 0;
+        win_state.t_win_start = win_state.tpos;
         win_state.q_win_start = 0;
         win_state.cigar_start_idx = 0;
         win_state.cigar_start_offset = 0;
@@ -176,6 +193,11 @@ fn extract_windows_from_alignment<'a>(
                             &mut win_state,
                             &alignment.overlap,
                         ) {
+                            if first_win_tstart == u32::MAX {
+                                first_win_tstart = ow.tstart;
+                            }
+                            last_win_tend = ow.tend;
+
                             wins.insert(win_state.tpos / window_size, ow);
                         }
                     }
@@ -198,6 +220,11 @@ fn extract_windows_from_alignment<'a>(
                             &mut win_state,
                             &alignment.overlap,
                         ) {
+                            if first_win_tstart == u32::MAX {
+                                first_win_tstart = win_state.t_win_start;
+                            }
+                            last_win_tend = ow.tend;
+
                             wins.insert(win_state.tpos / window_size, ow);
                         }
                     }
@@ -224,6 +251,11 @@ fn extract_windows_from_alignment<'a>(
                         &mut win_state,
                         &alignment.overlap,
                     ) {
+                        if first_win_tstart == u32::MAX {
+                            first_win_tstart = win_state.t_win_start;
+                        }
+                        last_win_tend = ow.tend;
+
                         wins.insert((win_state.tpos - 1) / window_size, ow);
                     }
                 }
@@ -247,13 +279,18 @@ fn extract_windows_from_alignment<'a>(
             get_last_cigar_op(&alignment.cigar).get_length(),
         );
 
+        if first_win_tstart == u32::MAX {
+            first_win_tstart = win_state.t_win_start;
+        }
+        last_win_tend = ow.tend;
+
         wins.insert(win_state.tpos / window_size, ow);
     }
 
     assert!(win_state.tpos == alignment.overlap.tend);
     assert!(win_state.qpos == alignment.overlap.qend - alignment.overlap.qstart);
 
-    (wins, diffs)
+    AlnFeatsInfo::new(wins, first_win_tstart, last_win_tend, diffs)
 }
 
 fn emit_window_check<'a>(
