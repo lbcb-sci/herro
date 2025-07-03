@@ -1,6 +1,7 @@
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
+use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
 use std::hash::Hash;
 use std::io::prelude::*;
@@ -22,6 +23,7 @@ use crate::windowing::AlnFeatsInfo;
 use crate::windowing::OverlapWindow;
 
 pub(crate) const TOP_K_SORT: usize = 30;
+const REL_FILTER_THRESHOLD: f32 = 0.1;
 
 const BASE_LOWER: [u8; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -45,8 +47,6 @@ const BASE_FORWARD: [u8; 128] = [
 
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
-    ovlps_cigar_map: &HashMap<u32, &Vec<u8>>,
-    tid: u32,
     tstart: usize,
     window_length: usize,
 ) -> Vec<u16> {
@@ -55,8 +55,7 @@ fn get_max_ins_for_window(
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
-        let qid = ow.overlap.return_other_id(tid);
-        let cigar = ovlps_cigar_map.get(&qid).unwrap();
+        let cigar = &ow.alignment.cigar;
         //let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
         let cigar_iter = CigarIter::new(&cigar[ow.cigar_start_idx..ow.cigar_end_idx]);
 
@@ -66,8 +65,9 @@ fn get_max_ins_for_window(
                 CigarOp::Insertion(l) => {
                     assert!(
                         tpos <= max_ins.len(),
-                        "Length {} is bigger than the tseq {}. {} {} {} {:?} {:?}",
-                        tpos,
+                        "Window start {}, target start {} - this is bigger than the tseq {}. {} {} {} {:?} {:?}",
+                        ow.tstart,
+                        tstart,
                         max_ins.len(),
                         ow.cigar_start_offset,
                         op.get_length(),
@@ -96,19 +96,6 @@ fn get_max_ins_for_window(
     max_ins
 }
 
-fn get_query_region(window: &OverlapWindow, tid: u32) -> (u32, u32) {
-    let (qstart, qend) = if window.overlap.tid == tid {
-        (window.overlap.qstart, window.overlap.qend)
-    } else {
-        (window.overlap.tstart, window.overlap.tend)
-    };
-
-    match window.overlap.strand {
-        Strand::Forward => (qstart + window.qstart, qstart + window.qend),
-        Strand::Reverse => (qend - window.qend, qend - window.qstart),
-    }
-}
-
 fn get_features_for_ol_window(
     mut bases: ArrayViewMut1<'_, u8>,
     mut quals: ArrayViewMut1<'_, u8>,
@@ -116,43 +103,39 @@ fn get_features_for_ol_window(
     cigar: &[u8],
     query: &HAECRecord,
     offset: usize,
-    tid: u32,
     max_ins: &[u16],
     qbuffer: &mut [u8],
 ) {
     // Handle query sequence
-    let (qstart, qend) = if window.overlap.tid == tid {
-        (window.overlap.qstart, window.overlap.qend)
-    } else {
-        (window.overlap.tstart, window.overlap.tend)
+    let qstart = window.alignment.overlap.qstart;
+    let qend = window.alignment.overlap.qend;
+    let strand = window.alignment.overlap.strand;
+
+    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> = match strand {
+        Strand::Forward => {
+            let range = (qstart + window.qstart) as usize..(qstart + window.qend) as usize;
+            let qlen = (window.qend - window.qstart) as usize;
+
+            query.seq.get_subseq(range.clone(), qbuffer);
+            let quals = &query.qual[range];
+
+            Box::new(qbuffer[..qlen].iter().zip(quals))
+        }
+        Strand::Reverse => {
+            let range = (qend - window.qend) as usize..(qend - window.qstart) as usize;
+            let qlen = (window.qend - window.qstart) as usize;
+
+            query.seq.get_rc_subseq(range.clone(), qbuffer);
+            let quals = &query.qual[range];
+
+            Box::new(
+                qbuffer[..qlen]
+                    .iter()
+                    .zip(quals.iter().rev())
+                    .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
+            )
+        }
     };
-
-    let mut query_iter: Box<dyn DoubleEndedIterator<Item = (&u8, &u8)>> =
-        match window.overlap.strand {
-            Strand::Forward => {
-                let range = (qstart + window.qstart) as usize..(qstart + window.qend) as usize;
-                let qlen = (window.qend - window.qstart) as usize;
-
-                query.seq.get_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
-
-                Box::new(qbuffer[..qlen].iter().zip(quals))
-            }
-            Strand::Reverse => {
-                let range = (qend - window.qend) as usize..(qend - window.qstart) as usize;
-                let qlen = (window.qend - window.qstart) as usize;
-
-                query.seq.get_rc_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
-
-                Box::new(
-                    qbuffer[..qlen]
-                        .iter()
-                        .zip(quals.iter().rev())
-                        .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
-                )
-            }
-        };
     //let mut query_iter = query_iter.skip(window.qstart as usize);
 
     // Number of cigars for the window
@@ -166,7 +149,7 @@ fn get_features_for_ol_window(
     let cigar = CigarIter::new(&cigar[window.cigar_start_idx..window.cigar_end_idx]);
 
     // Get features
-    let gap = if let Strand::Forward = window.overlap.strand {
+    let gap = if let Strand::Forward = strand {
         b'*'
     } else {
         b'#'
@@ -278,7 +261,6 @@ fn write_target_for_window(
 
 fn get_features_for_window(
     overlaps: &mut [OverlapWindow],
-    ovlps_cigar_map: &HashMap<u32, &Vec<u8>>,
     tid: u32,
     reads: &[HAECRecord],
     max_ins: &[u16],
@@ -290,8 +272,8 @@ fn get_features_for_window(
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
-    let mut bases = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'.');
-    let mut quals = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'!');
+    let mut bases = Array::from_elem((length, 1 + TOP_K_SORT), b'.');
+    let mut quals = Array::from_elem((length, 1 + TOP_K_SORT), b'!');
 
     // First write the target
     write_target_for_window(
@@ -306,32 +288,19 @@ fn get_features_for_window(
 
     // Write top-k overlaps for the window
     overlaps.iter().enumerate().for_each(|(i, ow)| {
-        let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
             bases.index_axis_mut(Axis(1), i + 1),
             quals.index_axis_mut(Axis(1), i + 1),
             ow,
-            ovlps_cigar_map.get(&qid).unwrap(),
-            &reads[qid as usize],
+            &ow.alignment.cigar,
+            &reads[ow.alignment.overlap.qid as usize],
             ow.tstart as usize - tstart,
-            tid,
             &max_ins,
             qbuffer,
         )
     });
 
     (bases, quals)
-}
-
-fn overlap_window_filter(cigar: &[u8]) -> bool {
-    let long_indel = CigarIter::new(cigar).any(|(op, _)| match op {
-        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l > 50 => true,
-        _ => false,
-    });
-
-    //accuracy >= 0.80 && !long_indel
-    //calculate_accuracy(cigar) >= 0.85 &&
-    !long_indel
 }
 
 pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
@@ -345,109 +314,128 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let read = &reads[rid as usize];
     read.seq.get_sequence(tbuf);
 
-    let (aln_feats_info, counts) = extract_windows_new(&overlaps, reads, window_size, (tbuf, qbuf));
+    let (windows, aln_feats_info, counts) =
+        extract_windows_new(&overlaps, reads, window_size, (tbuf, qbuf));
 
-    let tname = std::str::from_utf8(&read.id).unwrap();
-    let scores = score_alignments(&overlaps, &aln_feats_info, counts, tname, reads);
+    let scores = score_alignments(&overlaps, &aln_feats_info, counts);
+
+    let n_windows = windows.len();
+    feats_output.init(rid, &read.id);
+    for (i, mut window) in windows.into_iter().enumerate() {
+        window.sort_unstable_by_key(|w| Reverse(scores[&w.alignment.overlap.qid]));
+        window.truncate(TOP_K_SORT);
+
+        let win_len = if i == n_windows - 1 {
+            read.seq.len() - i * window_size as usize
+        } else {
+            window_size as usize
+        };
+
+        let max_ins = get_max_ins_for_window(&window, i * window_size as usize, win_len);
+
+        let (bases, quals) = get_features_for_window(
+            &mut window,
+            rid,
+            reads,
+            &max_ins,
+            i * window_size as usize,
+            win_len,
+            tbuf,
+            qbuf,
+        );
+
+        let supported = get_supported(&bases);
+        let qids = window
+            .iter()
+            .map(|ow| std::str::from_utf8(&reads[ow.alignment.overlap.qid as usize].id).unwrap())
+            .collect::<Vec<_>>();
+
+        feats_output.update(
+            rid,
+            i as u16,
+            bases,
+            quals,
+            supported,
+            qids,
+            n_windows as u16,
+        );
+    }
+
+    feats_output.emit();
 }
 
 fn score_alignments(
     alignments: &[Alignment],
-    aln_feats_info: &[AlnFeatsInfo],
-    counts: HashMap<(u32, u16), [u32; 5]>,
-    tname: &str,
-    reads: &[HAECRecord],
-) -> HashMap<u32, f32> {
+    aln_feats_info: &HashMap<u32, AlnFeatsInfo>,
+    counts: Vec<[u32; 5]>,
+) -> HashMap<u32, OrderedFloat<f32>> {
     let mut candidates = find_all_candidates(counts);
-    candidates.sort_unstable();
+    candidates.sort_unstable(); // We have to sort it for partitioning
 
-    let output_path = format!("{}.txt", tname);
+    /*let output_path = format!("{}.txt", tname);
     let mut file = std::fs::File::create(&output_path).expect("Cannot create overlap windows file");
+    writeln!(file, "qname\tsupported\tcandidates\tscore").unwrap();*/
 
     let scores = alignments
         .iter()
-        .zip(aln_feats_info.iter())
-        .map(|(a, feats_info)| {
+        .map(|a| {
+            let tid = a.overlap.tid;
             let qid = a.overlap.qid;
-            let qname = std::str::from_utf8(&reads[qid as usize].id).unwrap();
+            let feats_info = &aln_feats_info[&qid];
 
-            let start = candidates.partition_point(|&x| x < (feats_info.first_win_tstart, 0));
-            let end = candidates.partition_point(|&x| x < (feats_info.last_win_tend, 0));
+            let start = candidates.partition_point(|&x| x < feats_info.first_win_tstart);
+            let end = candidates.partition_point(|&x| x < feats_info.last_win_tend);
 
             let cset = HashSet::from_iter(candidates[start..end].iter().cloned());
-            let n_diff = feats_info.diffs.intersection(&cset).count();
+            let n_diff = feats_info
+                .diffs
+                .keys()
+                .filter(|(pos, ins)| *ins == 0 && cset.contains(pos))
+                .count();
 
             let n_candidates = end - start;
-            if n_diff > n_candidates {
-                let mut diffs_cands_sorted =
-                    feats_info.diffs.intersection(&cset).collect::<Vec<_>>();
-                diffs_cands_sorted.sort_unstable();
-
-                println!(
-                    "{tname}:{qname} {}-{}, {}-{}",
-                    a.overlap.tstart,
-                    a.overlap.tend,
-                    feats_info.first_win_tstart,
-                    feats_info.last_win_tend
-                );
-                for pos in diffs_cands_sorted {
-                    println!("{:?}", pos);
-                }
-
-                println!();
-
-                for pos in &candidates[start..end] {
-                    println!("{:?}", pos);
-                }
-            }
             assert!(
                 n_diff <= n_candidates,
-                "{tname}:{qname} n_diff {n_diff} cannot be bigger than n_candidates {n_candidates}"
+                "{tid}:{qid} n_diff {n_diff} cannot be bigger than n_candidates {n_candidates}",
             );
 
             if n_candidates == 0 {
-                writeln!(file, "{}\t{}\t{}\t{}", qname, n_diff, n_candidates, 0.0)
-                    .expect("Cannot write to overlap windows file");
+                //let qname = std::str::from_utf8(&reads[qid as usize].id).unwrap();
+                //writeln!(file, "{qname}\t0\t0\t0").unwrap();
 
-                return (qid, 0.0);
+                return (qid, OrderedFloat(0.0));
             }
 
             let score = (n_candidates - n_diff) as f32 / n_candidates as f32
                 * f32::ln(n_candidates as f32 + 1.);
 
-            writeln!(file, "{}\t{}\t{}\t{}", qname, n_diff, n_candidates, score)
-                .expect("Cannot write to overlap windows file");
+            /*let qname = std::str::from_utf8(&reads[qid as usize].id).unwrap();
+            writeln!(
+                file,
+                "{qname}\t{}\t{}\t{}",
+                n_candidates - n_diff,
+                n_candidates,
+                score
+            )
+            .unwrap();*/
 
-            (qid, score)
+            (qid, OrderedFloat(score))
         })
         .collect();
 
     scores
 }
 
-fn find_all_candidates(counts: HashMap<(u32, u16), [u32; 5]>) -> Vec<(u32, u16)> {
-    let n_alns_per_pos = counts
-        .iter()
-        .filter_map(|(pos, c)| {
-            if pos.1 == 0 {
-                Some((pos.0, c.iter().sum::<u32>()))
-            } else {
-                None
-            }
-        })
-        .collect::<HashMap<_, _>>();
-
+fn find_all_candidates(counts: Vec<[u32; 5]>) -> Vec<u32> {
     let candidates = counts
         .into_iter()
-        .filter_map(|(pos, mut c)| {
-            if pos.1 != 0 {
-                let n_alns = *n_alns_per_pos.get(&pos.0).unwrap();
-                let diff = n_alns - c.iter().sum::<u32>();
-                c[4] += diff;
-            }
+        .enumerate()
+        .filter_map(|(i, c)| {
+            let n_alns = c.iter().sum::<u32>();
+            let thresh = ((n_alns as f32 * REL_FILTER_THRESHOLD) as u32).max(3);
 
-            if c.into_iter().filter(|&count| count >= 3).count() >= 2 {
-                Some(pos)
+            if c.into_iter().filter(|&count| count >= thresh).count() >= 2 {
+                Some(i as u32)
             } else {
                 None
             }
