@@ -100,7 +100,10 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
         MinMax(st, en) => (st, en + 1),
     };
 
-    for (wid, window) in data[wid_st..wid_en].iter().enumerate() {
+    for (wid, window) in (wid_st..wid_en)
+        .into_iter()
+        .zip(data[wid_st..wid_en].iter())
+    {
         /*if window.n_alns < 2 {
             let start = wid * window_size;
             let end = ((wid + 1) * window_size).min(uncorrected.len());
@@ -156,15 +159,6 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
                     4 => b'*',
                     _ => panic!("Unrecognized base"),
                 };
-
-                /*if *il > 0.0 {
-                    println!(
-                        "{}\t{}\t{}",
-                        std::str::from_utf8(&read.id).unwrap(),
-                        corrected_seqs.len(),
-                        corrected.len(),
-                    );
-                }*/
 
                 /*println!(
                     "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}",

@@ -151,7 +151,14 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         let tidx: Vec<_> = f
             .supported
             .iter()
-            .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
+            .map(|&sp| {
+                if sp.pos == u16::MAX {
+                    // Due to MSA, sp.pos can be -1 -> overflow -> tdix will correspond to 0 (sp.ins = 1)
+                    return sp.ins as i32 - 1;
+                }
+
+                (f.indices[sp.pos as usize] + sp.ins as usize) as i32
+            })
             .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
 

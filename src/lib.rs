@@ -9,6 +9,7 @@ use pbars::{
 
 use glob::glob;
 use rustc_hash::FxHashSet as HashSet;
+use spoa::AlignmentEngine;
 use std::fs::metadata;
 use std::io::Error;
 use std::{
@@ -85,6 +86,15 @@ pub fn generate_features<T, U, V>(
                 let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
                 let mut tbuf = vec![0; max_len];
                 let mut qbuf = vec![0; max_len];
+                let mut aln_engine = AlignmentEngine::new(
+                    spoa::AlignmentType::kNW, // alignment type
+                    2,                        // match score
+                    -4,                       // mismatch penalty
+                    -6,                       // gap open penalty
+                    -2,                       // gap extend penalty
+                    -6,                       // q parameter
+                    -2,                       // c parameter
+                );
 
                 loop {
                     let (rid, alns) = match alns_receiver.recv() {
@@ -99,6 +109,7 @@ pub fn generate_features<T, U, V>(
                         window_size,
                         (&mut tbuf, &mut qbuf),
                         &mut feats_output,
+                        &mut aln_engine,
                     );
                 }
             });
@@ -167,6 +178,15 @@ pub fn error_correction<T, U, V>(
                     let mut feats_output = InferenceOutput::new(infer_s, batch_size);
                     let mut tbuf = vec![0; max_len];
                     let mut qbuf = vec![0; max_len];
+                    let mut aln_engine = AlignmentEngine::new(
+                        spoa::AlignmentType::kNW, // alignment type
+                        2,                        // match score
+                        -4,                       // mismatch penalty
+                        -6,                       // gap open penalty
+                        -2,                       // gap extend penalty
+                        -6,                       // q parameter
+                        -2,                       // c parameter
+                    );
 
                     loop {
                         let (rid, alns) = match alns_r.recv() {
@@ -181,6 +201,7 @@ pub fn error_correction<T, U, V>(
                             window_size,
                             (&mut tbuf, &mut qbuf),
                             &mut feats_output,
+                            &mut aln_engine,
                         );
                     }
                 });

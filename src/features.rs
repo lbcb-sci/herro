@@ -1,11 +1,17 @@
+use itertools::Itertools;
+use ndarray::concatenate;
+use ndarray::ArrayView2;
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
+use spoa::AlignmentEngine;
+use spoa::Graph;
 use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
 use std::hash::Hash;
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
+use std::os::unix::process;
 use std::path::Path;
 
 use crossbeam_channel::Sender;
@@ -310,6 +316,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     window_size: u32,
     (tbuf, qbuf): (&mut [u8], &mut [u8]),
     feats_output: &mut T,
+    aln_engine: &mut AlignmentEngine,
 ) {
     let read = &reads[rid as usize];
     read.seq.get_sequence(tbuf);
@@ -343,6 +350,49 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             tbuf,
             qbuf,
         );
+
+        let tpos_to_idx = bases
+            .index_axis(Axis(1), 0)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &b)| if b != b'*' { Some(i) } else { None })
+            .collect::<Vec<_>>();
+
+        let win_type = match i {
+            0 => WindowType::First,
+            _ if i == n_windows - 1 => WindowType::Last,
+            _ => WindowType::Internal,
+        };
+
+        let (bases, quals): (Vec<_>, Vec<_>) = (0..tpos_to_idx.len())
+            .step_by(100)
+            .map(|c_st| {
+                let c_en = (c_st + 100).min(tpos_to_idx.len());
+                let st_idx = tpos_to_idx[c_st];
+
+                let (b, q) = if c_en == tpos_to_idx.len() {
+                    // Last chunk - slice from start to end
+                    (bases.slice(s![st_idx.., ..]), quals.slice(s![st_idx.., ..]))
+                } else {
+                    // Regular chunk - slice from start to next chunk start
+                    let en_idx = tpos_to_idx[c_en];
+                    (
+                        bases.slice(s![st_idx..en_idx, ..]),
+                        quals.slice(s![st_idx..en_idx, ..]),
+                    )
+                };
+
+                perform_msa(b, q, win_type, aln_engine)
+            })
+            .unzip();
+
+        let views: Vec<_> = bases.iter().map(|a| a.view()).collect();
+        let bases = concatenate(Axis(0), &views).unwrap();
+
+        let views: Vec<_> = quals.iter().map(|a| a.view()).collect();
+        let quals = concatenate(Axis(0), &views).unwrap();
+
+        // let (bases, quals) = perform_msa(bases.view(), quals.view(), aln_engine);
 
         let supported = get_supported(&bases);
         let qids = window
@@ -424,6 +474,149 @@ fn score_alignments(
         .collect();
 
     scores
+}
+
+#[derive(Clone, Copy)]
+enum WindowType {
+    First,
+    Last,
+    Internal,
+}
+
+fn perform_msa(
+    bases: ArrayView2<u8>,
+    quals: ArrayView2<u8>,
+    win_type: WindowType,
+    aln_engine: &mut AlignmentEngine,
+) -> (Array2<u8>, Array2<u8>) {
+    // Arrays are L x 31
+
+    let mut graph = Graph::new();
+    let mut all_idx_to_pos = Vec::with_capacity(31);
+    let mut strands = Vec::with_capacity(31);
+
+    for row in bases.axis_iter(Axis(1)) {
+        let strand = row.iter().find_map(|&b| match b as char {
+            'A' | 'C' | 'G' | 'T' | '*' => Some(Strand::Forward),
+            'a' | 'c' | 'g' | 't' | '#' => Some(Strand::Reverse),
+            _ => None,
+        });
+
+        strands.push(strand);
+
+        if strand.is_some() {
+            let mut idx_to_pos = Vec::with_capacity(bases.len_of(Axis(0)));
+            let seq = row
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &b)| match b as char {
+                    'A' | 'a' => {
+                        idx_to_pos.push(i);
+                        Some(b'A')
+                    }
+                    'C' | 'c' => {
+                        idx_to_pos.push(i);
+                        Some(b'C')
+                    }
+                    'G' | 'g' => {
+                        idx_to_pos.push(i);
+                        Some(b'G')
+                    }
+                    'T' | 't' => {
+                        idx_to_pos.push(i);
+                        Some(b'T')
+                    }
+                    '*' | '#' | '.' => None,
+                    _ => panic!("Unrecognized base"),
+                })
+                .collect::<Vec<_>>();
+            all_idx_to_pos.push(idx_to_pos);
+
+            if !seq.is_empty() {
+                let aln = aln_engine.align(&seq, &graph);
+                graph.add_alignment(&aln, &seq, 1);
+            }
+        }
+    }
+
+    let msa = graph.multiple_sequence_alignment(false);
+
+    let length = msa[0].len();
+    let mut new_bases = Array::from_elem((length, 1 + TOP_K_SORT), b'.');
+    let mut new_quals = Array::from_elem((length, 1 + TOP_K_SORT), b'!');
+
+    let mut idx_to_pos_iter = all_idx_to_pos.into_iter();
+    let mut msa_iter = msa.into_iter();
+    for j in 0..1 + TOP_K_SORT {
+        if let Some(strand) = strands[j] {
+            let mut new_bases_row = new_bases.index_axis_mut(Axis(1), j);
+            let mut new_quals_row = new_quals.index_axis_mut(Axis(1), j);
+
+            let idx_to_pos = idx_to_pos_iter.next().unwrap();
+            if idx_to_pos.is_empty() {
+                match strand {
+                    Strand::Forward => new_bases_row.fill(b'*'),
+                    Strand::Reverse => new_bases_row.fill(b'#'),
+                }
+
+                continue;
+            }
+
+            let seq = msa_iter.next().unwrap();
+            let mut idx_to_pos = idx_to_pos.into_iter().peekable();
+
+            let qual = quals.index_axis(Axis(1), j);
+
+            let mut processed_first = if j == 0 { true } else { false };
+            for (i, base) in seq.into_iter().enumerate() {
+                if base == b'-' {
+                    if processed_first {
+                        let next_qual_idx = idx_to_pos.peek();
+                        if next_qual_idx.is_some()
+                            || !matches!(win_type, WindowType::Last)
+                            || j == 0
+                        {
+                            new_bases_row[i] = match strand {
+                                Strand::Forward => b'*',
+                                Strand::Reverse => b'#',
+                            };
+                        }
+                    } else {
+                        if !matches!(win_type, WindowType::First) {
+                            new_bases_row[i] = match strand {
+                                Strand::Forward => b'*',
+                                Strand::Reverse => b'#',
+                            };
+                        }
+                    }
+                } else {
+                    processed_first = true;
+
+                    let qual_idx = idx_to_pos.next().unwrap();
+                    let base = match strand {
+                        Strand::Forward => base,
+                        Strand::Reverse => BASE_LOWER[base as usize],
+                    };
+
+                    new_bases_row[i] = base;
+                    new_quals_row[i] = qual[qual_idx];
+                }
+            }
+
+            assert!(
+                idx_to_pos.next().is_none(),
+                "Not all positions are consumed"
+            );
+        }
+    }
+
+    assert!(msa_iter.next().is_none(), "Not all sequences are consumed");
+    assert!(
+        idx_to_pos_iter.next().is_none(),
+        "Not all idx_to_pos are consumed"
+    );
+
+    (new_bases, new_quals)
 }
 
 fn find_all_candidates(counts: Vec<[u32; 5]>) -> Vec<u32> {
