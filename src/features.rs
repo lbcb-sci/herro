@@ -15,6 +15,7 @@ use ordered_float::OrderedFloat;
 use crate::aligners::{CigarIter, CigarOp};
 use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData, WindowExample};
+use crate::overlaps::Overlap;
 use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
 use crate::windowing::{extract_windows, OverlapWindow};
@@ -43,7 +44,7 @@ const BASE_FORWARD: [u8; 128] = [
 
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
-    ovlps_cigar_map: &HashMap<u32, &Vec<u8>>,
+    ovlps_cigar_map: &HashMap<&Overlap, &Vec<u8>>,
     tid: u32,
     tstart: usize,
     window_length: usize,
@@ -54,7 +55,7 @@ fn get_max_ins_for_window(
 
         // Handle cigar
         let qid = ow.overlap.return_other_id(tid);
-        let cigar = ovlps_cigar_map.get(&qid).unwrap();
+        let cigar = ovlps_cigar_map.get(ow.overlap).unwrap();
         //let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
         let cigar_iter = CigarIter::new(&cigar[ow.cigar_start_idx..ow.cigar_end_idx]);
 
@@ -73,6 +74,7 @@ fn get_max_ins_for_window(
                         range,
                         ow.cigar_start_idx..ow.cigar_end_idx
                     );
+
 
                     max_ins[tpos - 1] = max_ins[tpos - 1].max(l as u16);
                     return;
@@ -276,7 +278,7 @@ fn write_target_for_window(
 
 fn get_features_for_window(
     overlaps: &mut [OverlapWindow],
-    ovlps_cigar_map: &HashMap<u32, &Vec<u8>>,
+    ovlps_cigar_map: &HashMap<&Overlap, &Vec<u8>>,
     tid: u32,
     reads: &[HAECRecord],
     max_ins: &[u16],
@@ -309,7 +311,7 @@ fn get_features_for_window(
             bases.index_axis_mut(Axis(1), i + 1),
             quals.index_axis_mut(Axis(1), i + 1),
             ow,
-            ovlps_cigar_map.get(&qid).unwrap(),
+            ovlps_cigar_map.get(ow.overlap).unwrap(),
             &reads[qid as usize],
             ow.tstart as usize - tstart,
             tid,
@@ -350,35 +352,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let mut ovlps_cigar_map = HashMap::default();
     let mut all_features = Vec::new();
     for alignment in overlaps.iter() {
-        let qid = alignment.overlap.return_other_id(rid);
-
-        // TODO - Remove this if unecessary
-        /*let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
-
-        // TODO - get proper target and query
-        let (tstart, tend, qstart, qend) = if overlap.tid == rid {
-            (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
-        } else {
-            (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
-        };
-
-        let tlen = tend as usize - tstart as usize;
-        reads[rid as usize]
-            .seq
-            .get_subseq(tstart as usize..tend as usize, tbuf);
-
-        let qlen = qend as usize - qstart as usize;
-        if overlaps::Strand::Forward == overlap.strand {
-            reads[qid as usize]
-                .seq
-                .get_subseq(qstart as usize..qend as usize, qbuf);
-        } else {
-            reads[qid as usize]
-                .seq
-                .get_rc_subseq(qstart as usize..qend as usize, qbuf);
-        }
-        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]); */
-
         let (tshift, qshift) = (0, 0);
 
         //Extract windows
@@ -393,7 +366,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             window_size,
         );
 
-        ovlps_cigar_map.insert(qid, &alignment.cigar);
+        ovlps_cigar_map.insert(&alignment.overlap, &alignment.cigar);
     }
 
     // Create directory for the read
@@ -417,16 +390,14 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             let qid = ow.overlap.return_other_id(rid);
 
             // TODO: Handle CIGAR offsets
-            let cigar = ovlps_cigar_map.get(&qid).unwrap();
+            let cigar = ovlps_cigar_map.get(ow.overlap).unwrap();
             //let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
             overlap_window_filter(&cigar[ow.cigar_start_idx..ow.cigar_end_idx])
         });
 
         // Sort window to take TOP-K
         windows[i].sort_by_key(|ow| {
-            let cigar = ovlps_cigar_map
-                .get(&ow.overlap.return_other_id(rid))
-                .unwrap();
+            let cigar = ovlps_cigar_map.get(ow.overlap).unwrap();
 
             let tstart = ow.tstart as usize;
             let tend = i * window_size as usize + win_len;
