@@ -176,7 +176,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
                     corrected.len(),
                     'S',
                     b,
-                    base
+                    base as char
                 );*/
 
                 if base != b'*' {
@@ -218,7 +218,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
                     corrected.len(),
                     "N",
                     counts,
-                    base,
+                    base as char,
                 );*/
 
                 if base != b'*' {

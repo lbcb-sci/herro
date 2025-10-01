@@ -1,3 +1,4 @@
+use ndarray::Array1;
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
@@ -5,6 +6,7 @@ use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
+use std::iter::once;
 use std::path::Path;
 
 use crossbeam_channel::Sender;
@@ -45,7 +47,6 @@ const BASE_FORWARD: [u8; 128] = [
 fn get_max_ins_for_window(
     overlaps: &[OverlapWindow], // Sorted overlaps
     ovlps_cigar_map: &HashMap<&Overlap, &Vec<u8>>,
-    tid: u32,
     tstart: usize,
     window_length: usize,
 ) -> Vec<u16> {
@@ -54,7 +55,6 @@ fn get_max_ins_for_window(
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
-        let qid = ow.overlap.return_other_id(tid);
         let cigar = ovlps_cigar_map.get(ow.overlap).unwrap();
         //let cigar_len = ow.cigar_end_idx - ow.cigar_start_idx + 1;
         let cigar_iter = CigarIter::new(&cigar[ow.cigar_start_idx..ow.cigar_end_idx]);
@@ -74,7 +74,6 @@ fn get_max_ins_for_window(
                         range,
                         ow.cigar_start_idx..ow.cigar_end_idx
                     );
-
 
                     max_ins[tpos - 1] = max_ins[tpos - 1].max(l as u16);
                     return;
@@ -387,8 +386,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         // Filter windows
         windows[i].retain(|ow| {
-            let qid = ow.overlap.return_other_id(rid);
-
             // TODO: Handle CIGAR offsets
             let cigar = ovlps_cigar_map.get(ow.overlap).unwrap();
             //let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
@@ -422,7 +419,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         let max_ins = get_max_ins_for_window(
             &windows[i],
             &ovlps_cigar_map,
-            rid,
             i * window_size as usize,
             win_len,
         );
@@ -448,16 +444,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let supported = get_supported(&bases);
 
-        /*feats_output.update(
-            rid,
-            i as u16,
-            bases,
-            quals,
-            supported,
-            qids,
-            n_windows as u16,
-        );*/
-
         all_features.push((
             rid,
             i as u16,
@@ -471,7 +457,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
     // Calculate ratios
     let mut ratios = HashMap::default();
-    for (rid, i, bases, quals, supported, qids, n_windows) in all_features.iter() {
+    for (_, _, bases, _, supported, qids, _) in all_features.iter() {
         let pos_to_idx = bases
             .slice(s![.., 0])
             .iter()
@@ -510,7 +496,16 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         }
     }
 
-    for (rid, i, bases, quals, supported, qids, n_windows) in all_features {
+    let aln_len_ratio: HashMap<&str, f32> = overlaps
+        .iter()
+        .map(|a| {
+            let qname = std::str::from_utf8(&reads[a.overlap.qid as usize].id).unwrap();
+            let ratio = (a.overlap.tend - a.overlap.tstart) as f32 / a.overlap.tlen as f32;
+            (qname, ratio)
+        })
+        .collect();
+
+    for (rid, i, bases, quals, _, qids, n_windows) in all_features {
         let mut iden = vec![OrderedFloat(f64::MAX)];
         for &qry_rid in qids.iter() {
             let s = ratios
@@ -577,13 +572,36 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             .as_standard_layout()
             .to_owned();*/
 
-        let qids = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
+        let qids: Vec<&str> = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
+
+        let ovlp_lens = Array1::from_iter(
+            once(1.)
+                .chain(qids.iter().map(|&qid| aln_len_ratio[qid]))
+                .chain(std::iter::repeat(0.).take(TOP_K_SORT - qids.len())),
+        );
+
+        let support_ratio = Array1::from_iter(
+            once(1.)
+                .chain(qids.iter().map(|&qid| {
+                    let (n, d) = ratios[qid];
+                    let total = n + d;
+
+                    if total == 0. {
+                        0. as f32
+                    } else {
+                        (n / total) as f32
+                    }
+                }))
+                .chain(std::iter::repeat(0.).take(TOP_K_SORT - qids.len())),
+        );
 
         feats_output.update(
             rid,
             i as u16,
             new_bases,
             new_quals,
+            ovlp_lens,
+            support_ratio,
             supported,
             qids,
             n_windows as u16,
@@ -775,6 +793,8 @@ fn output_features<P: AsRef<Path>>(
     ids: &[&str],
     bases: Array2<u8>,
     quals: Array2<u8>,
+    ovlp_lens: Array1<f32>,
+    support_ratio: Array1<f32>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
     let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
@@ -800,6 +820,17 @@ fn output_features<P: AsRef<Path>>(
     writer.extend(features.iter())?;
     writer.finish()?;
 
+    // Write aux
+    let aux = stack![Axis(0), ovlp_lens, support_ratio];
+    let aux_path = path.as_ref().join(format!("{}.aux.npy", window_id));
+    let mut writer = npyz::WriteOptions::new()
+        .default_dtype()
+        .shape(&shape)
+        .writer(BufWriter::new(File::create(aux_path)?))
+        .begin_nd()?;
+    writer.extend(aux.iter())?;
+    writer.finish()?;
+
     let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
@@ -821,6 +852,8 @@ pub(crate) trait FeaturesOutput<'a> {
         wid: u16,
         bases: Array2<u8>,
         quals: Array2<u8>,
+        ovlp_lens: Array1<f32>,
+        support_ratio: Array1<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         n_wids: u16,
@@ -868,6 +901,8 @@ where
         wid: u16,
         bases: Array2<u8>,
         quals: Array2<u8>,
+        ovlp_lens: Array1<f32>,
+        support_ratio: Array1<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         _n_wids: u16,
@@ -876,7 +911,17 @@ where
         let output_path = self.base_path.as_ref().join(rid);
         create_dir_all(&output_path).expect("Cannot create directory");
 
-        output_features(&output_path, wid, &ids, bases, quals, supported.into_iter()).unwrap();
+        output_features(
+            &output_path,
+            wid,
+            &ids,
+            bases,
+            quals,
+            ovlp_lens,
+            support_ratio,
+            supported.into_iter(),
+        )
+        .unwrap();
     }
 
     fn emit(&mut self) {
@@ -915,6 +960,8 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         wid: u16,
         bases: Array2<u8>,
         quals: Array2<u8>,
+        ovlp_lens: Array1<f32>,
+        support_ratio: Array1<f32>,
         supported: Vec<SupportedPos>,
         ids: Vec<&str>,
         n_wids: u16,
