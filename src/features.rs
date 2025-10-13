@@ -3,11 +3,12 @@ use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
 use rustc_hash::FxHashSet as HashSet;
 use std::cmp::Reverse;
-use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
-use std::io::{BufWriter, Result};
+use std::io::Cursor;
+use std::io::Result;
 use std::iter::once;
-use std::path::Path;
+use tar::Builder;
+use tar::Header;
 
 use crossbeam_channel::Sender;
 
@@ -577,13 +578,13 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         let ovlp_lens = Array1::from_iter(
             once(1.)
                 .chain(qids.iter().map(|&qid| aln_len_ratio[qid]))
-                .chain(std::iter::repeat(0.).take(TOP_K_SORT - qids.len())),
+                .chain(std::iter::repeat(0.).take(TOP_K_SORT.saturating_sub(qids.len()))),
         );
 
         let support_ratio = Array1::from_iter(
             once(1.)
                 .chain(qids.iter().map(|&qid| {
-                    let (n, d) = ratios[qid];
+                    let &(n, d) = ratios.get(qid).unwrap_or(&(0., 0.));
                     let total = n + d;
 
                     if total == 0. {
@@ -592,7 +593,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
                         (n / total) as f32
                     }
                 }))
-                .chain(std::iter::repeat(0.).take(TOP_K_SORT - qids.len())),
+                .chain(std::iter::repeat(0.).take(TOP_K_SORT.saturating_sub(qids.len()))),
         );
 
         feats_output.update(
@@ -787,8 +788,9 @@ where
     supporeted
 }
 
-fn output_features<P: AsRef<Path>>(
-    path: P,
+fn output_features<T: Write>(
+    tar: &mut Builder<T>,
+    rid: &str,
     window_id: u16,
     ids: &[&str],
     bases: Array2<u8>,
@@ -797,49 +799,68 @@ fn output_features<P: AsRef<Path>>(
     support_ratio: Array1<f32>,
     supported: impl IntoIterator<Item = SupportedPos>,
 ) -> Result<()> {
-    let ids_path = path.as_ref().join(format!("{}.ids.txt", window_id));
-    let ids_file = File::create(ids_path)?;
-    let mut ids_writer = BufWriter::new(ids_file);
-    for id in ids {
-        writeln!(&mut ids_writer, "{}", id)?
-    }
+    let ids_path = format!("{rid}/{window_id}.ids.txt");
+    let ids_buf = ids.join("\n");
+    write_file_to_tar(tar, &ids_path, ids_buf.as_bytes());
 
-    let features_path = path.as_ref().join(format!("{}.features.npy", window_id));
+    let features_path = format!("{rid}/{window_id}.features.npy");
 
     // Convert quals to u8 + stack feats
     let quals = quals.mapv(|q| q as u8);
     let features = stack![Axis(0), bases, quals];
 
     // Write feats
+    //let mut buf = Cursor::new(Vec::new());
+    let mut buf = Vec::new();
     let shape: Vec<_> = features.shape().iter().map(|&s| s as u64).collect();
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
         .shape(&shape)
-        .writer(BufWriter::new(File::create(features_path)?))
+        .writer(&mut buf)
         .begin_nd()?;
     writer.extend(features.iter())?;
     writer.finish()?;
+    write_file_to_tar(tar, &features_path, &buf);
+
+    /*buf.set_position(0);
+    buf.get_mut().clear();*/
+    buf.clear();
 
     // Write aux
     let aux = stack![Axis(0), ovlp_lens, support_ratio];
-    let aux_path = path.as_ref().join(format!("{}.aux.npy", window_id));
+    let aux_path = format!("{rid}/{window_id}.aux.npy");
+    let shape: Vec<_> = aux.shape().iter().map(|&s| s as u64).collect();
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
         .shape(&shape)
-        .writer(BufWriter::new(File::create(aux_path)?))
+        .writer(&mut buf)
         .begin_nd()?;
     writer.extend(aux.iter())?;
     writer.finish()?;
+    write_file_to_tar(tar, &aux_path, &buf);
 
-    let supported_path = path.as_ref().join(format!("{}.supported.npy", window_id));
+    buf.clear();
+
+    let mut buf = Cursor::new(buf);
+    let supported_path = format!("{rid}/{window_id}.supported.npy");
     let mut writer = npyz::WriteOptions::new()
         .default_dtype()
-        .writer(BufWriter::new(File::create(supported_path)?))
+        .writer(&mut buf)
         .begin_1d()?;
     writer.extend(supported)?;
     writer.finish()?;
+    write_file_to_tar(tar, &supported_path, &buf.get_ref());
 
     Ok(())
+}
+
+fn write_file_to_tar<W: Write>(tar: &mut Builder<W>, path: &str, data: &[u8]) {
+    let mut header = Header::new_gnu();
+    header.set_size(data.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+
+    tar.append_data(&mut header, path, data).unwrap();
 }
 
 pub(crate) trait FeaturesOutput<'a> {
@@ -861,23 +882,22 @@ pub(crate) trait FeaturesOutput<'a> {
     fn emit(&mut self);
 }
 
-#[derive(Clone)]
 pub(crate) struct FeatsGenOutput<'a, T>
 where
-    T: AsRef<Path> + Clone,
+    T: Write,
 {
-    base_path: T,
+    tar: Builder<T>,
     rname: Option<&'a [u8]>,
     pbar_sender: Sender<PBarNotification>,
 }
 
 impl<T> FeatsGenOutput<'_, T>
 where
-    T: AsRef<Path> + Clone,
+    T: Write,
 {
-    pub(crate) fn new(path: T, pbar_sender: Sender<PBarNotification>) -> Self {
+    pub(crate) fn new(tar: Builder<T>, pbar_sender: Sender<PBarNotification>) -> Self {
         Self {
-            base_path: path,
+            tar: tar,
             rname: None,
             pbar_sender: pbar_sender,
         }
@@ -886,7 +906,7 @@ where
 
 impl<'a, T> FeaturesOutput<'a> for FeatsGenOutput<'a, T>
 where
-    T: AsRef<Path> + Clone,
+    T: Write,
 {
     fn init<'b>(&mut self, _rid: u32, rname: &'b [u8])
     where
@@ -908,11 +928,11 @@ where
         _n_wids: u16,
     ) {
         let rid = std::str::from_utf8(self.rname.unwrap()).unwrap();
-        let output_path = self.base_path.as_ref().join(rid);
-        create_dir_all(&output_path).expect("Cannot create directory");
+        self.tar.append_dir(rid, ".").unwrap();
 
         output_features(
-            &output_path,
+            &mut self.tar,
+            rid,
             wid,
             &ids,
             bases,

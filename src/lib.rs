@@ -78,11 +78,15 @@ pub fn generate_features<T, U, V>(
             )
         });
 
-        for _ in 0..threads {
+        for i in 0..threads {
             let pbar_s = pbar_sender.clone();
 
+            let tar_path = output_path.as_ref().join(format!("{}.tar", i));
             s.spawn(|| {
-                let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
+                let tar_file = File::create(tar_path).unwrap();
+                let tar = tar::Builder::new(tar_file);
+
+                let mut feats_output = FeatsGenOutput::new(tar, pbar_s);
                 let mut tbuf = vec![0; max_len];
                 let mut qbuf = vec![0; max_len];
 
