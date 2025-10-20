@@ -507,11 +507,12 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         .collect();
 
     for (rid, i, bases, quals, _, qids, n_windows) in all_features {
-        let mut iden = vec![OrderedFloat(f64::MAX)];
+        let mut iden = vec![OrderedFloat(f32::MAX)];
         for &qry_rid in qids.iter() {
-            let s = ratios
-                .get(qry_rid)
-                .map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
+            let s = ratios.get(qry_rid).map_or(0., |(n, d)| {
+                n / (n + d) * aln_len_ratio[qry_rid] * aln_len_ratio[qry_rid]
+            });
+            //.map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
 
             iden.push(OrderedFloat(s));
         }
@@ -577,13 +578,13 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let ovlp_lens = Array1::from_iter(
             once(1.)
-                .chain(qids.iter().map(|&qid| aln_len_ratio[qid]))
+                .chain(qids.iter().take(TOP_K_SORT).map(|&qid| aln_len_ratio[qid]))
                 .chain(std::iter::repeat(0.).take(TOP_K_SORT.saturating_sub(qids.len()))),
         );
 
         let support_ratio = Array1::from_iter(
             once(1.)
-                .chain(qids.iter().map(|&qid| {
+                .chain(qids.iter().take(TOP_K_SORT).map(|&qid| {
                     let &(n, d) = ratios.get(qid).unwrap_or(&(0., 0.));
                     let total = n + d;
 

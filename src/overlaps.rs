@@ -123,7 +123,7 @@ pub fn parse_paf(
     //let mut reader = BufReader::new(read);
 
     let mut buffer = Vec::new();
-    //let mut processed = HashSet::default();
+    let mut processed = HashSet::default();
 
     //let mut alignments = Vec::new();
     let mut tid_to_alns = HashMap::default();
@@ -178,11 +178,11 @@ pub fn parse_paf(
             continue;
         }
 
-        /*if processed.contains(&(qid, tid)) {
+        if processed.contains(&(qid, tid)) {
             buffer.clear();
             continue; // We assume the first overlap between two reads is the best one
         }
-        processed.insert((qid, tid));*/
+        processed.insert((qid, tid));
 
         let overlap = Overlap::new(qid, qlen, qstart, qend, strand, tid, tlen, tstart, tend);
         let alignment = Alignment::new(overlap, cigar);
