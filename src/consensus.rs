@@ -26,6 +26,7 @@ pub(crate) struct ConsensusWindow {
     pub(crate) n_total_wins: u16,
     pub(crate) bases: Array2<u8>,
     pub(crate) quals: Array2<u8>,
+    pub(crate) aux: Array2<f32>,
     pub(crate) indices: Vec<usize>,
     pub(crate) supported: Vec<SupportedPos>,
     pub(crate) info_logits: Option<Vec<f32>>,
@@ -40,6 +41,7 @@ impl ConsensusWindow {
         n_total_wins: u16,
         bases: Array2<u8>,
         quals: Array2<u8>,
+        aux: Array2<f32>,
         indices: Vec<usize>,
         supported: Vec<SupportedPos>,
         info_logits: Option<Vec<f32>>,
@@ -52,6 +54,7 @@ impl ConsensusWindow {
             n_total_wins,
             bases,
             quals,
+            aux,
             indices,
             supported,
             info_logits,
@@ -126,9 +129,8 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
             _ => window
                 .supported
                 .iter()
-                .zip(window.info_logits.as_ref().unwrap().iter())
                 .zip(window.bases_logits.as_ref().unwrap().iter())
-                .map(|((supp, il), bl)| (*supp, (*il, bl)))
+                .map(|(supp, bl)| (*supp, bl))
                 .collect(),
         };
 
@@ -141,7 +143,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
                 ins = 0;
             }
 
-            if let Some((_, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
+            if let Some(b) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
                 let argmax = b
                     .iter()
                     .enumerate()

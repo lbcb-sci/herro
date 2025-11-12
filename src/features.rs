@@ -458,7 +458,8 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
     // Calculate ratios
     let mut ratios = HashMap::default();
-    for (_, _, bases, _, supported, qids, _) in all_features.iter() {
+    let mut total_supp_pos = 0;
+    for (_, wid, bases, _, supported, qids, _) in all_features.iter() {
         let pos_to_idx = bases
             .slice(s![.., 0])
             .iter()
@@ -468,11 +469,13 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             .collect::<Vec<_>>();
         let indices = supported
             .iter()
+            .filter(|s| s.ins == 0)
             .map(|s| pos_to_idx[s.pos as usize] + s.ins as usize)
             .collect::<HashSet<_>>();
 
-        let tgt = bases.slice(s![.., 0]);
+        total_supp_pos += indices.len();
 
+        let tgt = bases.slice(s![.., 0]);
         for (qid, row_idx) in qids.iter().zip(1..) {
             let qry = bases.slice(s![.., row_idx]);
 
@@ -484,35 +487,51 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
                 let t = (*tgt_b as char).to_ascii_uppercase();
                 let q = (*qry_b as char).to_ascii_uppercase();
 
-                if t == '*' {
+                // No need with filter s.ins == 0
+                /*if t == '*' {
+                    continue;
+                }*/
+
+                if q == '.' {
                     continue;
                 }
 
                 if q == t {
                     ratios.entry(qid.to_string()).or_insert((0., 0.)).0 += 1.;
+
+                    /*if str::from_utf8(&reads[rid as usize].id).unwrap()
+                        == "ebf435d7-769a-438c-9d0e-a65259ef2eb4"
+                    {
+                        println!("{}\t{}\t{}\t{}\t{}", wid, pos, qid, t, q);
+                    }*/
                 } else {
                     ratios.entry(qid.to_string()).or_insert((0., 0.)).1 += 1.;
+
+                    /*if str::from_utf8(&reads[rid as usize].id).unwrap()
+                        == "ebf435d7-769a-438c-9d0e-a65259ef2eb4"
+                    {
+                        println!("{}\t{}\t{}\t{}\t{}", wid, pos, qid, t, q);
+                    }*/
                 }
             }
         }
     }
 
-    let aln_len_ratio: HashMap<&str, f32> = overlaps
-        .iter()
-        .map(|a| {
-            let qname = std::str::from_utf8(&reads[a.overlap.qid as usize].id).unwrap();
-            let ratio = (a.overlap.tend - a.overlap.tstart) as f32 / a.overlap.tlen as f32;
-            (qname, ratio)
-        })
-        .collect();
+    /*let aln_len_ratio: HashMap<&str, f32> = overlaps
+    .iter()
+    .map(|a| {
+        let qname = std::str::from_utf8(&reads[a.overlap.qid as usize].id).unwrap();
+        let ratio = (a.overlap.tend - a.overlap.tstart) as f32 / a.overlap.tlen as f32;
+        (qname, ratio)
+    })
+    .collect();*/
 
     for (rid, i, bases, quals, _, qids, n_windows) in all_features {
         let mut iden = vec![OrderedFloat(f32::MAX)];
         for &qry_rid in qids.iter() {
-            let s = ratios.get(qry_rid).map_or(0., |(n, d)| {
-                n / (n + d) * aln_len_ratio[qry_rid] * aln_len_ratio[qry_rid]
-            });
-            //.map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
+            let s = ratios
+                .get(qry_rid)
+                .map_or(0., |(n, d)| n / (n + d) * f32::ln(n + d + 1.));
 
             iden.push(OrderedFloat(s));
         }
@@ -565,20 +584,26 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let supported = get_supported(&new_bases);
 
-        /*let new_bases = stack(Axis(1), &new_bases)
-        .unwrap()
-        .as_standard_layout()
-        .to_owned();
-        let new_quals = stack(Axis(1), &new_quals)
-            .unwrap()
-            .as_standard_layout()
-            .to_owned();*/
-
         let qids: Vec<&str> = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
+
+        /*let ovlp_lens = Array1::from_iter(
+            once(1.)
+                .chain(qids.iter().take(TOP_K_SORT).map(|&qid| aln_len_ratio[qid]))
+                .chain(std::iter::repeat(0.).take(TOP_K_SORT.saturating_sub(qids.len()))),
+        );*/
 
         let ovlp_lens = Array1::from_iter(
             once(1.)
-                .chain(qids.iter().take(TOP_K_SORT).map(|&qid| aln_len_ratio[qid]))
+                .chain(qids.iter().take(TOP_K_SORT).map(|&qid| {
+                    let &(n, d) = ratios.get(qid).unwrap_or(&(0., 0.));
+                    let total = n + d;
+
+                    if total_supp_pos == 0 {
+                        0. as f32
+                    } else {
+                        total / total_supp_pos as f32
+                    }
+                }))
                 .chain(std::iter::repeat(0.).take(TOP_K_SORT.saturating_sub(qids.len()))),
         );
 
@@ -748,43 +773,6 @@ where
             supporeted.push(SupportedPos::new(tpos as u16, ins));
         }
     }
-
-    /*for l in 1..len + 1 {
-        if l != len && bases[[0, l]] == b'*' {
-            // Gap in target -> do not test
-            continue;
-        }
-
-        let subseq = bases.slice(s![.., start..l]);
-        counter.clear();
-        for read_subseq in subseq.axis_iter(Axis(0)) {
-            let mut hasher = FxHasher::default();
-            let result = read_subseq.iter().try_for_each(|&v| {
-                if v == b'.' {
-                    return Err(()); // No alignment position present
-                } else {
-                    hasher.write_u8(BASE_FORWARD[v as usize]);
-                    return Ok(());
-                }
-            });
-
-            if result.is_ok() {
-                // Check if alignment is really aligned
-                let entry = counter.entry(hasher.finish()).or_insert(0);
-                *entry += 1;
-            }
-        }
-
-        let n_supported = counter
-            .iter()
-            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
-        if n_supported >= 2 {
-            supporeted.push(tpos);
-        }
-
-        start = l;
-        tpos += 1;
-    }*/
 
     supporeted
 }
@@ -987,12 +975,15 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         ids: Vec<&str>,
         n_wids: u16,
     ) {
+        let aux = stack![Axis(0), ovlp_lens, support_ratio];
+
         self.features.push(WindowExample::new(
             rid,
             wid,
             ids.len().min(TOP_K_SORT) as u8,
             bases,
             quals,
+            aux,
             supported,
             n_wids,
         ));

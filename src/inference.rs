@@ -34,7 +34,7 @@ pub(crate) struct InferenceBatch {
     wids: Vec<u32>,
     bases: Tensor,
     quals: Tensor,
-    lens: Tensor,
+    aux: Tensor,
     indices: Vec<Tensor>,
 }
 
@@ -43,14 +43,14 @@ impl InferenceBatch {
         wids: Vec<u32>,
         bases: Tensor,
         quals: Tensor,
-        lens: Tensor,
+        aux: Tensor,
         indices: Vec<Tensor>,
     ) -> Self {
         Self {
             wids,
             bases,
             quals,
-            lens,
+            aux,
             indices,
         }
     }
@@ -96,7 +96,13 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         (tch::Kind::Uint8, tch::Device::Cpu),
     );
 
-    let mut lens = Vec::with_capacity(batch.len());
+    let size = [
+        batch.len() as i64,
+        2,
+        batch[0].1.bases.len_of(Axis(1)) as i64,
+    ];
+    let aux = Tensor::empty(&size, (tch::Kind::Float, tch::Device::Cpu));
+
     let mut indices = Vec::with_capacity(batch.len());
     let mut wids = Vec::with_capacity(batch.len());
 
@@ -120,7 +126,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         let qt = unsafe {
             let shape: Vec<_> = f.quals.shape().iter().map(|s| *s as i64).collect();
             Tensor::from_blob(
-                f.quals.as_ptr() as *const u8,
+                f.quals.as_ptr(),
                 &shape,
                 &[shape[shape.len() - 1], 1],
                 tch::Kind::Uint8,
@@ -130,6 +136,21 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
 
         bases.i((idx as i64, ..l as i64, ..)).copy_(&bt);
         quals.i((idx as i64, ..l as i64, ..)).copy_(&qt);
+
+        assert!(f.aux.is_standard_layout());
+        let aux_t = unsafe {
+            let shape: Vec<_> = f.aux.shape().iter().map(|s| *s as i64).collect();
+            Tensor::from_blob(
+                f.aux.as_ptr() as *const u8,
+                &shape,
+                &[shape[shape.len() - 1], 1],
+                tch::Kind::Float,
+                tch::Device::Cpu,
+            )
+        };
+
+        //aux_t.flat_view().print();
+        aux.i((idx as i64, .., ..)).copy_(&aux_t);
 
         /*for p in 0..l {
             for r in 0..f.bases.len_of(Axis(1)) {
@@ -146,76 +167,46 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         //println!("Bases shape: {:?}", f.bases.shape());
         //println!("Quals shape: {:?}", f.quals.shape());
 
-        lens.push(f.supported.len() as i32);
-
         let tidx: Vec<_> = f
             .supported
             .iter()
             .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
             .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
-
-        /*if *wid == 0 && f.rid == 133874 {
-            bases
-                .i((idx as i64, ..l as i64, ..))
-                .save("bases.pt")
-                .unwrap();
-
-            Tensor::try_from(&f.bases)
-                .unwrap()
-                .save("bases2.pt")
-                .unwrap();
-            /*quals
-            .i((idx as i64, ..l as i64, ..))
-            .save("quals.pt")
-            .unwrap();*/
-
-            //Tensor::try_from(&tidx).unwrap().save("indices.pt").unwrap();
-        }*/
     }
 
-    /*if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
-        && batch[0].1.supported.contains(&SupportedPos::new(1157, 0))
-    {
-        bases.save("bases_to_test.tmp2.pt").unwrap();
-        quals.save("quals_to_test.tmp2.pt").unwrap();
-        indices[0].save("indices_to_test.tmp2.pt").unwrap();
-    }*/
-
-    InferenceBatch::new(wids, bases, quals, Tensor::try_from(lens).unwrap(), indices)
+    InferenceBatch::new(wids, bases, quals, aux, indices)
 }
 
 fn inference(
     batch: InferenceBatch,
     model: &CModule,
     device: tch::Device,
-) -> (Vec<u32>, Vec<Tensor>, Vec<Tensor>) {
+) -> (Vec<u32>, Vec<Tensor>) {
     let quals = batch.quals.to_device_(device, tch::Kind::Float, true, true);
     let quals = QUAL_SCALE * quals - QUAL_OFFSET;
 
     let inputs = [
         IValue::Tensor(batch.bases.to_device_(device, tch::Kind::Int, true, true)),
         IValue::Tensor(quals),
-        IValue::Tensor(batch.lens),
+        IValue::Tensor(batch.aux.to_device_(device, tch::Kind::Float, true, true)),
         IValue::TensorList(batch.indices),
     ];
 
-    let (info_logits, bases_logits) =
-        <(Tensor, Tensor)>::try_from(model.forward_is(&inputs).unwrap()).unwrap();
+    let bases_logits = <Tensor>::try_from(model.forward_is(&inputs).unwrap()).unwrap();
 
     // Get number of target positions for each window
-    let lens: Vec<i64> = match inputs[2] {
-        IValue::Tensor(ref t) => Vec::try_from(t).unwrap(),
+    let lens: Vec<i64> = match inputs[3] {
+        IValue::TensorList(ref t) => t.iter().map(|ti| ti.size()[0]).collect(),
         _ => unreachable!(),
     };
 
-    let info_logits = info_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
     let bases_logits = bases_logits
         //.argmax(1, false)
         .to(tch::Device::Cpu)
         .split_with_sizes(&lens, 0);
 
-    (batch.wids, info_logits, bases_logits)
+    (batch.wids, bases_logits)
 }
 
 pub(crate) fn inference_worker<P: AsRef<Path>>(
@@ -236,15 +227,10 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
         };
 
         for batch in data.batches {
-            let (wids, info_logits, bases_logits) = inference(batch, &model, device);
+            let (wids, bases_logits) = inference(batch, &model, device);
             wids.into_iter()
-                .zip(info_logits.into_iter())
                 .zip(bases_logits.into_iter())
-                .for_each(|((wid, il), bl)| {
-                    data.consensus_data[wid as usize]
-                        .info_logits
-                        .replace(Vec::try_from(il).unwrap());
-
+                .for_each(|(wid, bl)| {
                     data.consensus_data[wid as usize]
                         .bases_logits
                         .replace(Vec::try_from(bl).unwrap());
@@ -272,10 +258,6 @@ pub(crate) fn prepare_examples(
             // Transform bases (encode) and quals (normalize)
             example.bases.mapv_inplace(|b| BASES_MAP[b as usize]);
 
-            // Transpose: [R, L] -> [L, R]
-            //bases.swap_axes(1, 0);
-            //quals.swap_axes(1, 0);
-
             let tidx = get_target_indices(&example.bases);
 
             //TODO: Start here.
@@ -286,6 +268,7 @@ pub(crate) fn prepare_examples(
                 example.n_total_wins,
                 example.bases,
                 example.quals,
+                example.aux,
                 tidx,
                 example.supported,
                 None,
@@ -329,6 +312,7 @@ pub(crate) struct WindowExample {
     n_alns: u8,
     bases: Array2<u8>,
     quals: Array2<u8>,
+    aux: Array2<f32>,
     supported: Vec<SupportedPos>,
     n_total_wins: u16,
 }
@@ -340,6 +324,7 @@ impl WindowExample {
         n_alns: u8,
         bases: Array2<u8>,
         quals: Array2<u8>,
+        aux: Array2<f32>,
         supported: Vec<SupportedPos>,
         n_total_wins: u16,
     ) -> Self {
@@ -349,6 +334,7 @@ impl WindowExample {
             n_alns,
             bases,
             quals,
+            aux,
             supported,
             n_total_wins,
         }

@@ -130,6 +130,7 @@ pub fn error_correction<T, U, V>(
     V: AsRef<Path> + Send,
 {
     let devices = prepare_cuda_devices(&devices);
+    println!("CUDA available: {}", tch::Cuda::is_available());
 
     tch::set_num_threads(1);
 
