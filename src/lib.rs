@@ -196,7 +196,7 @@ pub fn error_correction<T, U, V>(
             });
 
             let reads_ref = &reads;
-            s.spawn(move || consensus_worker(reads_ref, cons_recv, writer_s));
+            s.spawn(move || consensus_worker(reads_ref, cons_recv, writer_s, window_size as usize));
         }
 
         drop(writer_sender);
@@ -267,50 +267,47 @@ fn parse_reads<P: AsRef<Path>>(
 fn correction_writer<U: AsRef<Path>>(
     reads: &[HAECRecord],
     output_path: U,
-    consensus_recv: Receiver<(usize, Vec<Vec<u8>>)>,
+    consensus_recv: Receiver<(usize, Vec<u8>)>,
     pbar_sender: Sender<PBarNotification>,
 ) {
     let file = File::create(output_path).unwrap();
     let mut writer = BufWriter::new(file);
+    let mut processed: HashSet<usize> = HashSet::default();
 
     loop {
-        let (rid, seqs) = match consensus_recv.recv() {
+        let (rid, seq) = match consensus_recv.recv() {
             Ok(out) => out,
             Err(_) => break,
         };
 
-        if seqs.len() == 1 {
-            write_sequence(&seqs[0], None, &reads[rid], &mut writer).unwrap();
-        } else {
-            for (i, seq) in seqs.into_iter().enumerate() {
-                write_sequence(&seq, Some(i), &reads[rid], &mut writer).unwrap();
-            }
-        }
-
+        write_sequence(&seq, &reads[rid], &mut writer).unwrap();
+        processed.insert(rid);
         pbar_sender.send(PBarNotification::Inc).unwrap();
+    }
+
+    for (rid, read) in reads.iter().enumerate() {
+        if !processed.contains(&rid) {
+            let seq = Vec::<u8>::from(&read.seq);
+            write_sequence(&seq, read, &mut writer).unwrap();
+        }
     }
 }
 
 fn write_sequence<W: Write>(
     seq: &[u8],
-    idx: Option<usize>,
     read: &HAECRecord,
     writer: &mut W,
 ) -> Result<(), Error> {
     writer.write_all(b">")?;
     writer.write_all(&read.id)?;
-
-    match idx {
-        Some(idx) => write!(writer, ":{} ", idx)?,
-        None => writer.write_all(b" ")?,
-    };
+    writer.write_all(b" ")?;
 
     if let Some(desc) = read.description.as_ref() {
         writer.write_all(desc)?;
     }
     writer.write_all(b"\n")?;
 
-    writer.write_all(&seq)?;
+    writer.write_all(seq)?;
     write!(writer, "\n")?;
 
     Ok(())

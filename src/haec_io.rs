@@ -45,10 +45,6 @@ pub fn get_reads<P: AsRef<Path>>(
     let mut reads = Vec::new();
     while let Some(record) = reader.next() {
         let record = record.expect("Error parsing fastx file.");
-        if record.num_bases() < min_length as usize {
-            continue;
-        }
-
         let mut split = record.id().splitn(2, |c| *c == b' ' || *c == b'\t');
         let id = split.next().expect("Invalid read id.").to_owned();
         let description = split.next().map(|d| d.to_owned());

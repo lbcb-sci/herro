@@ -5,7 +5,6 @@ use std::{cmp::Reverse, collections::BinaryHeap};
 
 use crossbeam_channel::{Receiver, Sender};
 use itertools::Itertools;
-use itertools::MinMaxResult::*;
 
 use ndarray::{s, Axis};
 use rustc_hash::FxHashMap as HashMap;
@@ -83,37 +82,16 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Option<Vec<Vec<u8>>> {
-    let mut corrected_seqs = Vec::new();
+fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord, window_size: usize) -> Vec<u8> {
     let mut corrected: Vec<u8> = Vec::new();
 
-    let minmax = data
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, win)| if win.n_alns > 1 { Some(idx) } else { None })
-        .minmax();
-    let (wid_st, wid_en) = match minmax {
-        NoElements => {
-            return None;
-        }
-        OneElement(wid) => (wid, wid + 1),
-        MinMax(st, en) => (st, en + 1),
-    };
-
-    for (wid, window) in data[wid_st..wid_en].iter().enumerate() {
-        /*if window.n_alns < 2 {
-            let start = wid * window_size;
-            let end = ((wid + 1) * window_size).min(uncorrected.len());
-
-            corrected.extend(&uncorrected[start..end]);
-            continue;
-        }*/
+    for window in data.iter() {
         if window.n_alns < 2 {
-            if corrected.len() > 0 {
-                corrected_seqs.push(corrected);
-                corrected = Vec::new();
-            }
-
+            let start = window.wid as usize * window_size;
+            let end = ((window.wid as usize + 1) * window_size).min(read.seq.len());
+            let old_len = corrected.len();
+            corrected.resize(old_len + (end - start), 0);
+            read.seq.get_subseq(start..end, &mut corrected[old_len..]);
             continue;
         }
 
@@ -228,17 +206,14 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
         }
     }
 
-    if corrected.len() > 0 {
-        corrected_seqs.push(corrected);
-    }
-
-    Some(corrected_seqs)
+    corrected
 }
 
 pub(crate) fn consensus_worker(
     reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
-    sender: Sender<(usize, Vec<Vec<u8>>)>,
+    sender: Sender<(usize, Vec<u8>)>,
+    window_size: usize,
 ) {
     let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];
@@ -259,14 +234,9 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let seq = consensus(windows, &mut counts, &reads[rid as usize]);
-
-                if let Some(s) = seq {
-                    sender.send((rid as usize, s)).unwrap();
-                }
+                let seq = consensus(windows, &mut counts, &reads[rid as usize], window_size);
+                sender.send((rid as usize, seq)).unwrap();
             }
         }
-
-        //println!("Consensus device: {}, in {}", device, receiver.len());
     }
 }
