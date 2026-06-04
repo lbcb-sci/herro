@@ -82,11 +82,16 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord, window_size: usize) -> Vec<u8> {
+fn consensus(
+    data: ConsensusData,
+    counts: &mut [u8],
+    read: &HAECRecord,
+    window_size: usize,
+) -> Vec<u8> {
     let mut corrected: Vec<u8> = Vec::new();
 
     for window in data.iter() {
-        if window.n_alns < 2 {
+        if window.n_alns < 5 {
             let start = window.wid as usize * window_size;
             let end = ((window.wid as usize + 1) * window_size).min(read.seq.len());
             let old_len = corrected.len();
