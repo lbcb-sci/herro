@@ -1,4 +1,5 @@
 use ndarray::Array2;
+use ordered_float::OrderedFloat;
 
 use std::{cmp::Reverse, collections::BinaryHeap};
 
@@ -11,6 +12,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use crate::features::SupportedPos;
 
+use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
@@ -27,7 +29,7 @@ pub(crate) struct ConsensusWindow {
     pub(crate) indices: Vec<usize>,
     pub(crate) supported: Vec<SupportedPos>,
     pub(crate) info_logits: Option<Vec<f32>>,
-    pub(crate) bases_logits: Option<Vec<u8>>,
+    pub(crate) bases_logits: Option<Vec<Vec<f32>>>,
 }
 
 impl ConsensusWindow {
@@ -41,7 +43,7 @@ impl ConsensusWindow {
         indices: Vec<usize>,
         supported: Vec<SupportedPos>,
         info_logits: Option<Vec<f32>>,
-        bases_logits: Option<Vec<u8>>,
+        bases_logits: Option<Vec<Vec<f32>>>,
     ) -> Self {
         Self {
             rid,
@@ -81,7 +83,7 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
-fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
+fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Option<Vec<Vec<u8>>> {
     let mut corrected_seqs = Vec::new();
     let mut corrected: Vec<u8> = Vec::new();
 
@@ -98,14 +100,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
         MinMax(st, en) => (st, en + 1),
     };
 
-    for window in data[wid_st..wid_en].iter() {
-        /*if window.n_alns < 2 {
-            let start = wid * window_size;
-            let end = ((wid + 1) * window_size).min(uncorrected.len());
-
-            corrected.extend(&uncorrected[start..end]);
-            continue;
-        }*/
+    for (wid, window) in data[wid_st..wid_en].iter().enumerate() {
         if window.n_alns < 2 {
             if corrected.len() > 0 {
                 corrected_seqs.push(corrected);
@@ -115,8 +110,6 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
             continue;
         }
 
-        // Don't analyze empty rows: LxR -> LxN
-        //let n_rows = (window.n_alns + 1).min(TOP_K + 1);
         let n_rows = window.n_alns + 1;
         let bases = window.bases.slice(s![.., ..n_rows as usize]);
         let maybe_info = match window.supported.len() {
@@ -126,7 +119,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                 .iter()
                 .zip(window.info_logits.as_ref().unwrap().iter())
                 .zip(window.bases_logits.as_ref().unwrap().iter())
-                .map(|((supp, il), bl)| (*supp, (*il, *bl)))
+                .map(|((supp, il), bl)| (*supp, (*il, bl)))
                 .collect(),
         };
 
@@ -140,7 +133,13 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
             }
 
             if let Some((_, b)) = maybe_info.get(&SupportedPos::new(pos as u16, ins)) {
-                let base = match *b {
+                let argmax = b
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, &v)| OrderedFloat(v))
+                    .unwrap()
+                    .0 as u8;
+                let base = match argmax {
                     0 => b'A',
                     1 => b'C',
                     2 => b'G',
@@ -159,7 +158,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                 }*/
 
                 /*println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}",
                     std::str::from_utf8(&read.id).unwrap(),
                     wid,
                     pos,
@@ -167,8 +166,10 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                     corrected_seqs.len(),
                     corrected.len(),
                     'S',
+                    b,
                     base
                 );*/
+
                 if base != b'*' {
                     corrected.push(base);
                 }
@@ -199,7 +200,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                 };
 
                 /*println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:?}\t{}",
                     std::str::from_utf8(&read.id).unwrap(),
                     wid,
                     pos,
@@ -207,8 +208,10 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
                     corrected_seqs.len(),
                     corrected.len(),
                     "N",
+                    counts,
                     base,
                 );*/
+
                 if base != b'*' {
                     corrected.push(base);
                 }
@@ -224,6 +227,7 @@ fn consensus(data: ConsensusData, counts: &mut [u8]) -> Option<Vec<Vec<u8>>> {
 }
 
 pub(crate) fn consensus_worker(
+    reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
     sender: Sender<(usize, Vec<Vec<u8>>)>,
 ) {
@@ -246,7 +250,7 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let seq = consensus(windows, &mut counts);
+                let seq = consensus(windows, &mut counts, &reads[rid as usize]);
 
                 if let Some(s) = seq {
                     sender.send((rid as usize, s)).unwrap();

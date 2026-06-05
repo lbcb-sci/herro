@@ -1,5 +1,7 @@
 use npyz::WriterBuilder;
 use rustc_hash::FxHashMap as HashMap;
+use rustc_hash::FxHashSet as HashSet;
+use std::cmp::Reverse;
 use std::fs::{create_dir_all, File};
 use std::io::prelude::*;
 use std::io::{BufWriter, Result};
@@ -17,7 +19,7 @@ use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
 use crate::windowing::{extract_windows, OverlapWindow};
 
-pub(crate) const TOP_K: usize = 30;
+pub(crate) const TOP_K_SORT: usize = 30;
 
 const BASE_LOWER: [u8; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -47,7 +49,7 @@ fn get_max_ins_for_window(
     window_length: usize,
 ) -> Vec<u16> {
     let mut max_ins = vec![0; window_length];
-    for ow in overlaps.iter().take(TOP_K) {
+    for ow in overlaps.iter() {
         let mut tpos = ow.tstart as usize - tstart;
 
         // Handle cigar
@@ -149,16 +151,7 @@ fn get_features_for_ol_window(
                 )
             }
         };
-    //let mut query_iter = query_iter.skip(window.qstart as usize);
 
-    // Number of cigars for the window
-    // TODO get error when we calculate correct number for end -> (idx, 0)
-    // Works for this expression but unecessarily iterates through (idx, 0)
-    //let cigar_len = window.cigar_end_idx - window.cigar_start_idx + 1;
-    //let cigar_end = cigar.len().min((window.cigar_end_idx + 1) as usize);
-
-    // Handle cigar
-    //let cigar = cigar[window.cigar_start_idx as usize..cigar_end].iter();
     let cigar = CigarIter::new(&cigar[window.cigar_start_idx..window.cigar_end_idx]);
 
     // Get features
@@ -286,8 +279,8 @@ fn get_features_for_window(
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
 
-    let mut bases = Array::from_elem((length, 1 + TOP_K), b'.');
-    let mut quals = Array::from_elem((length, 1 + TOP_K), b'!');
+    let mut bases = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'.');
+    let mut quals = Array::from_elem((length, 1 + overlaps.len().max(TOP_K_SORT)), b'!');
 
     // First write the target
     write_target_for_window(
@@ -301,7 +294,7 @@ fn get_features_for_window(
     );
 
     // Write top-k overlaps for the window
-    overlaps.iter().take(TOP_K).enumerate().for_each(|(i, ow)| {
+    overlaps.iter().enumerate().for_each(|(i, ow)| {
         let qid = ow.overlap.return_other_id(tid);
         get_features_for_ol_window(
             bases.index_axis_mut(Axis(1), i + 1),
@@ -321,7 +314,7 @@ fn get_features_for_window(
 
 fn overlap_window_filter(cigar: &[u8]) -> bool {
     let long_indel = CigarIter::new(cigar).any(|(op, _)| match op {
-        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l >= 30 => true,
+        CigarOp::Insertion(l) | CigarOp::Deletion(l) if l > 50 => true,
         _ => false,
     });
 
@@ -346,35 +339,9 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     let mut windows = vec![Vec::new(); n_windows];
 
     let mut ovlps_cigar_map = HashMap::default();
+    let mut all_features = Vec::new();
     for alignment in overlaps.iter() {
         let qid = alignment.overlap.return_other_id(rid);
-
-        // TODO - Remove this if unecessary
-        /*let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
-
-        // TODO - get proper target and query
-        let (tstart, tend, qstart, qend) = if overlap.tid == rid {
-            (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
-        } else {
-            (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
-        };
-
-        let tlen = tend as usize - tstart as usize;
-        reads[rid as usize]
-            .seq
-            .get_subseq(tstart as usize..tend as usize, tbuf);
-
-        let qlen = qend as usize - qstart as usize;
-        if overlaps::Strand::Forward == overlap.strand {
-            reads[qid as usize]
-                .seq
-                .get_subseq(qstart as usize..qend as usize, qbuf);
-        } else {
-            reads[qid as usize]
-                .seq
-                .get_rc_subseq(qstart as usize..qend as usize, qbuf);
-        }
-        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]); */
 
         let (tshift, qshift) = (0, 0);
 
@@ -392,10 +359,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         ovlps_cigar_map.insert(qid, &alignment.cigar);
     }
-
-    // Create directory for the read
-    //let output_path = Path::new("features").join(&read.id);
-    //create_dir_all(&output_path).expect("Cannot create directory");
 
     feats_output.init(rid, &read.id);
     for i in 0..n_windows {
@@ -465,7 +428,7 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             qbuf,
         );
 
-        let qids: Vec<&str> = windows[i]
+        let qids: Vec<_> = windows[i]
             .iter()
             .map(|ow| {
                 std::str::from_utf8(&reads[ow.overlap.return_other_id(rid) as usize].id).unwrap()
@@ -474,11 +437,142 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         let supported = get_supported(&bases);
 
-        feats_output.update(
+        /*feats_output.update(
             rid,
             i as u16,
             bases,
             quals,
+            supported,
+            qids,
+            n_windows as u16,
+        );*/
+
+        all_features.push((
+            rid,
+            i as u16,
+            bases,
+            quals,
+            supported,
+            qids,
+            n_windows as u16,
+        ));
+    }
+
+    // Calculate ratios
+    let mut ratios = HashMap::default();
+    for (rid, i, bases, quals, supported, qids, n_windows) in all_features.iter() {
+        let pos_to_idx = bases
+            .slice(s![.., 0])
+            .iter()
+            .enumerate()
+            .filter(|&(_, b)| *b != b'*')
+            .map(|(i, _)| i)
+            .collect::<Vec<_>>();
+        let indices = supported
+            .iter()
+            .map(|s| pos_to_idx[s.pos as usize] + s.ins as usize)
+            .collect::<HashSet<_>>();
+
+        let tgt = bases.slice(s![.., 0]);
+
+        for (qid, row_idx) in qids.iter().zip(1..) {
+            let qry = bases.slice(s![.., row_idx]);
+
+            for (pos, (tgt_b, qry_b)) in tgt.iter().zip(qry.iter()).enumerate() {
+                if !indices.contains(&pos) {
+                    continue;
+                }
+
+                let t = (*tgt_b as char).to_ascii_uppercase();
+                let q = (*qry_b as char).to_ascii_uppercase();
+
+                if t == '*' {
+                    continue;
+                }
+
+                if q == t {
+                    ratios.entry(qid.to_string()).or_insert((0., 0.)).0 += 1.;
+                } else {
+                    ratios.entry(qid.to_string()).or_insert((0., 0.)).1 += 1.;
+                }
+            }
+        }
+    }
+
+    for (rid, i, bases, quals, supported, qids, n_windows) in all_features {
+        let mut iden = vec![OrderedFloat(f64::MAX)];
+        for &qry_rid in qids.iter() {
+            let s = ratios
+                .get(qry_rid)
+                .map_or(0., |(n, d)| n / (n + d) * f64::ln(n + d + 1.));
+
+            iden.push(OrderedFloat(s));
+        }
+
+        let mut sr = (0..iden.len()).collect::<Vec<_>>();
+        sr.sort_by_key(|&i| Reverse(iden[i]));
+
+        let mut new_bases = Vec::new();
+        let mut new_quals = Vec::new();
+
+        for &i in sr.iter().take(TOP_K_SORT + 1) {
+            new_bases.push(bases.index_axis(Axis(1), i));
+            new_quals.push(quals.index_axis(Axis(1), i));
+        }
+        for i in sr.len()..TOP_K_SORT + 1 {
+            new_bases.push(bases.index_axis(Axis(1), i));
+            new_quals.push(quals.index_axis(Axis(1), i));
+        }
+
+        assert_eq!(new_bases.len(), TOP_K_SORT + 1);
+        assert_eq!(new_quals.len(), TOP_K_SORT + 1);
+
+        let new_bases = stack(Axis(1), &new_bases).unwrap();
+        let retain_idx: Vec<_> = new_bases
+            .axis_iter(Axis(0))
+            .enumerate()
+            .filter_map(|(pos, col)| {
+                let all_gap = col
+                    .iter()
+                    .filter(|&b| *b != b'.')
+                    .all(|&b| b == b'*' || b == b'#');
+                if all_gap {
+                    None
+                } else {
+                    Some(pos)
+                }
+            })
+            .collect();
+
+        let new_bases = new_bases
+            .select(Axis(0), &retain_idx)
+            .as_standard_layout()
+            .to_owned();
+
+        let new_quals = stack(Axis(1), &new_quals)
+            .unwrap()
+            .select(Axis(0), &retain_idx)
+            .as_standard_layout()
+            .to_owned();
+
+        let supported = get_supported(&new_bases);
+
+        /*let new_bases = stack(Axis(1), &new_bases)
+        .unwrap()
+        .as_standard_layout()
+        .to_owned();
+        let new_quals = stack(Axis(1), &new_quals)
+            .unwrap()
+            .as_standard_layout()
+            .to_owned();*/
+
+        let qids = sr.iter().skip(1).map(|&i| qids[i - 1]).collect();
+
+        feats_output.update(
+            rid,
+            i as u16,
+            new_bases,
+            new_quals,
             supported,
             qids,
             n_windows as u16,
@@ -588,9 +682,7 @@ fn get_supported<S>(bases: &ArrayBase<S, Ix2>) -> Vec<SupportedPos>
 where
     S: Data<Elem = u8>,
 {
-    // bases -> [R, L]
-
-    let mut counter: HashMap<u8, u8> = HashMap::default();
+    let mut counter: HashMap<u8, usize> = HashMap::default();
     counter.insert(b'A', 0);
     counter.insert(b'C', 0);
     counter.insert(b'G', 0);
@@ -617,50 +709,14 @@ where
             *counter.get_mut(&BASE_FORWARD[b as usize]).unwrap() += 1;
         });
 
+        let thresh = (bases.len_of(Axis(1)) as f64 * 0.1) as usize;
         let n_supported = counter
             .iter()
-            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
+            .fold(0u8, |acc, (_, &c)| if c >= thresh { acc + 1 } else { acc });
         if n_supported >= 2 {
             supporeted.push(SupportedPos::new(tpos as u16, ins));
         }
     }
-
-    /*for l in 1..len + 1 {
-        if l != len && bases[[0, l]] == b'*' {
-            // Gap in target -> do not test
-            continue;
-        }
-
-        let subseq = bases.slice(s![.., start..l]);
-        counter.clear();
-        for read_subseq in subseq.axis_iter(Axis(0)) {
-            let mut hasher = FxHasher::default();
-            let result = read_subseq.iter().try_for_each(|&v| {
-                if v == b'.' {
-                    return Err(()); // No alignment position present
-                } else {
-                    hasher.write_u8(BASE_FORWARD[v as usize]);
-                    return Ok(());
-                }
-            });
-
-            if result.is_ok() {
-                // Check if alignment is really aligned
-                let entry = counter.entry(hasher.finish()).or_insert(0);
-                *entry += 1;
-            }
-        }
-
-        let n_supported = counter
-            .iter()
-            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
-        if n_supported >= 2 {
-            supporeted.push(tpos);
-        }
-
-        start = l;
-        tpos += 1;
-    }*/
 
     supporeted
 }
@@ -818,7 +874,7 @@ impl<'a> FeaturesOutput<'a> for InferenceOutput {
         self.features.push(WindowExample::new(
             rid,
             wid,
-            ids.len().min(TOP_K) as u8,
+            ids.len().min(TOP_K_SORT) as u8,
             bases,
             quals,
             supported,
