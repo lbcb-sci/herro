@@ -151,16 +151,7 @@ fn get_features_for_ol_window(
                 )
             }
         };
-    //let mut query_iter = query_iter.skip(window.qstart as usize);
 
-    // Number of cigars for the window
-    // TODO get error when we calculate correct number for end -> (idx, 0)
-    // Works for this expression but unecessarily iterates through (idx, 0)
-    //let cigar_len = window.cigar_end_idx - window.cigar_start_idx + 1;
-    //let cigar_end = cigar.len().min((window.cigar_end_idx + 1) as usize);
-
-    // Handle cigar
-    //let cigar = cigar[window.cigar_start_idx as usize..cigar_end].iter();
     let cigar = CigarIter::new(&cigar[window.cigar_start_idx..window.cigar_end_idx]);
 
     // Get features
@@ -352,33 +343,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     for alignment in overlaps.iter() {
         let qid = alignment.overlap.return_other_id(rid);
 
-        // TODO - Remove this if unecessary
-        /*let mut cigar = get_proper_cigar(&alignment.cigar, overlap.tid == rid, overlap.strand);
-
-        // TODO - get proper target and query
-        let (tstart, tend, qstart, qend) = if overlap.tid == rid {
-            (overlap.tstart, overlap.tend, overlap.qstart, overlap.qend)
-        } else {
-            (overlap.qstart, overlap.qend, overlap.tstart, overlap.tend)
-        };
-
-        let tlen = tend as usize - tstart as usize;
-        reads[rid as usize]
-            .seq
-            .get_subseq(tstart as usize..tend as usize, tbuf);
-
-        let qlen = qend as usize - qstart as usize;
-        if overlaps::Strand::Forward == overlap.strand {
-            reads[qid as usize]
-                .seq
-                .get_subseq(qstart as usize..qend as usize, qbuf);
-        } else {
-            reads[qid as usize]
-                .seq
-                .get_rc_subseq(qstart as usize..qend as usize, qbuf);
-        }
-        let (tshift, qshift) = fix_cigar(&mut cigar, &tbuf[..tlen], &qbuf[..qlen]); */
-
         let (tshift, qshift) = (0, 0);
 
         //Extract windows
@@ -395,10 +359,6 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
 
         ovlps_cigar_map.insert(qid, &alignment.cigar);
     }
-
-    // Create directory for the read
-    //let output_path = Path::new("features").join(&read.id);
-    //create_dir_all(&output_path).expect("Cannot create directory");
 
     feats_output.init(rid, &read.id);
     for i in 0..n_windows {
@@ -757,43 +717,6 @@ where
             supporeted.push(SupportedPos::new(tpos as u16, ins));
         }
     }
-
-    /*for l in 1..len + 1 {
-        if l != len && bases[[0, l]] == b'*' {
-            // Gap in target -> do not test
-            continue;
-        }
-
-        let subseq = bases.slice(s![.., start..l]);
-        counter.clear();
-        for read_subseq in subseq.axis_iter(Axis(0)) {
-            let mut hasher = FxHasher::default();
-            let result = read_subseq.iter().try_for_each(|&v| {
-                if v == b'.' {
-                    return Err(()); // No alignment position present
-                } else {
-                    hasher.write_u8(BASE_FORWARD[v as usize]);
-                    return Ok(());
-                }
-            });
-
-            if result.is_ok() {
-                // Check if alignment is really aligned
-                let entry = counter.entry(hasher.finish()).or_insert(0);
-                *entry += 1;
-            }
-        }
-
-        let n_supported = counter
-            .iter()
-            .fold(0u8, |acc, (_, &c)| if c >= 3 { acc + 1 } else { acc });
-        if n_supported >= 2 {
-            supporeted.push(tpos);
-        }
-
-        start = l;
-        tpos += 1;
-    }*/
 
     supporeted
 }

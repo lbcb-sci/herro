@@ -1,5 +1,5 @@
 # Stage: devel
-FROM nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04 as devel
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 as devel
 
 # Install essential packages
 RUN apt-get update \
@@ -15,7 +15,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && export PATH="/root/.cargo/bin:${PATH}"
 
 # Get libtorch
-RUN wget -q -O libtorch.zip https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip \
+RUN wget -q -O libtorch.zip https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcu124.zip \
     && unzip -q libtorch.zip && rm libtorch.zip \
     && export LIBTORCH=/libtorch \
     && export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
@@ -31,7 +31,7 @@ RUN export LIBTORCH=/libtorch \
     && RUSTFLAGS="-Ctarget-cpu=native" cargo build -q --release
 
 # Stage: final
-FROM nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04 as final
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 as final
 
 # Copy files from the previous stage
 COPY --from=devel /minimap2/minimap2 /bin/minimap2
@@ -49,5 +49,5 @@ ENV LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
 
 # Labels
 LABEL Author="Dominik Stanojevic"
-LABEL Version="v0.0.1"
+LABEL Version="v0.1.1"
 LABEL Name="herro"

@@ -369,7 +369,6 @@ pub(crate) fn alignment_reader<T: AsRef<Path>, U: AsRef<Path>>(
             .unwrap();
 
         alignments.into_iter().for_each(|example| {
-            //println!("Aln reader: {}", alns_sender.len());
             alns_sender.send(example).unwrap();
         });
     }

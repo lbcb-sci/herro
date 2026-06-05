@@ -10,7 +10,7 @@ HERRO (Haplotype-aware ERRor cOrrection)  is a highly accurate, haplotype-aware,
 
 ### Compile from source
 
-- [libtorch 2.0.*](https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip)
+- [libtorch 2.4.*](https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcu124.zip)
 - [rustup](https://rustup.rs/)
 
 

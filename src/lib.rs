@@ -335,7 +335,7 @@ fn prepare_cuda_devices(devices: &[usize]) -> Vec<usize> {
             })
             .collect();
 
-        println!(
+        eprintln!(
             "Using CUDA_VISIBLE_DEVICES='{}'; mapped devices {:?} to logical IDs {:?}",
             cvd, devices, mapped
         );
@@ -349,7 +349,7 @@ fn prepare_cuda_devices(devices: &[usize]) -> Vec<usize> {
             .join(",");
         std::env::set_var("CUDA_VISIBLE_DEVICES", &device_list);
 
-        println!(
+        eprintln!(
             "Set CUDA_VISIBLE_DEVICES='{}' (for requested devices {:?})",
             device_list, devices
         );

@@ -101,13 +101,6 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
     };
 
     for (wid, window) in data[wid_st..wid_en].iter().enumerate() {
-        /*if window.n_alns < 2 {
-            let start = wid * window_size;
-            let end = ((wid + 1) * window_size).min(uncorrected.len());
-
-            corrected.extend(&uncorrected[start..end]);
-            continue;
-        }*/
         if window.n_alns < 2 {
             if corrected.len() > 0 {
                 corrected_seqs.push(corrected);
@@ -117,8 +110,6 @@ fn consensus(data: ConsensusData, counts: &mut [u8], read: &HAECRecord) -> Optio
             continue;
         }
 
-        // Don't analyze empty rows: LxR -> LxN
-        //let n_rows = (window.n_alns + 1).min(TOP_K + 1);
         let n_rows = window.n_alns + 1;
         let bases = window.bases.slice(s![.., ..n_rows as usize]);
         let maybe_info = match window.supported.len() {

@@ -1,5 +1,5 @@
 Bootstrap: docker
-From: nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04
+From: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 Stage: devel
 
 %files
@@ -19,7 +19,7 @@ Stage: devel
     export PATH="/root/.cargo/bin:${PATH}"
 
     # Get libtorch
-    wget -q -O libtorch.zip https://download.pytorch.org/libtorch/cu117/libtorch-cxx11-abi-shared-with-deps-2.0.1%2Bcu117.zip
+    wget -q -O libtorch.zip https://download.pytorch.org/libtorch/cu124/libtorch-cxx11-abi-shared-with-deps-2.4.0%2Bcu124.zip
     unzip -q libtorch.zip && rm libtorch.zip
     export LIBTORCH=/libtorch
     export LD_LIBRARY_PATH=${LIBTORCH}/lib:$LD_LIBRARY_PATH
@@ -30,7 +30,7 @@ Stage: devel
 
 
 Bootstrap: docker
-From: nvidia/cuda:11.7.1-cudnn8-runtime-ubuntu22.04
+From: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
 Stage: final
 
 %files from devel
@@ -52,5 +52,5 @@ Stage: final
 
 %labels
     Author Dominik Stanojevic
-    Version v0.2.0
+    Version v0.1.1
     Name herro

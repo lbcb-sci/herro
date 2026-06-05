@@ -131,21 +131,6 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
         bases.i((idx as i64, ..l as i64, ..)).copy_(&bt);
         quals.i((idx as i64, ..l as i64, ..)).copy_(&qt);
 
-        /*for p in 0..l {
-            for r in 0..f.bases.len_of(Axis(1)) {
-                let _ = bases
-                    .i((idx as i64, p as i64, r as i64))
-                    .fill_(f.bases[[p, r]] as i64);
-
-                let _ = quals
-                    .i((idx as i64, p as i64, r as i64))
-                    .fill_(f.quals[[p, r]] as f64);
-            }
-        }*/
-
-        //println!("Bases shape: {:?}", f.bases.shape());
-        //println!("Quals shape: {:?}", f.quals.shape());
-
         lens.push(f.supported.len() as i32);
 
         let tidx: Vec<_> = f
@@ -154,33 +139,7 @@ fn collate<'a>(batch: &[(u32, &ConsensusWindow)]) -> InferenceBatch {
             .map(|&sp| (f.indices[sp.pos as usize] + sp.ins as usize) as i32)
             .collect();
         indices.push(Tensor::try_from(tidx).unwrap());
-
-        /*if *wid == 0 && f.rid == 133874 {
-            bases
-                .i((idx as i64, ..l as i64, ..))
-                .save("bases.pt")
-                .unwrap();
-
-            Tensor::try_from(&f.bases)
-                .unwrap()
-                .save("bases2.pt")
-                .unwrap();
-            /*quals
-            .i((idx as i64, ..l as i64, ..))
-            .save("quals.pt")
-            .unwrap();*/
-
-            //Tensor::try_from(&tidx).unwrap().save("indices.pt").unwrap();
-        }*/
     }
-
-    /*if batch[0].1.supported.contains(&SupportedPos::new(837, 0))
-        && batch[0].1.supported.contains(&SupportedPos::new(1157, 0))
-    {
-        bases.save("bases_to_test.tmp2.pt").unwrap();
-        quals.save("quals_to_test.tmp2.pt").unwrap();
-        indices[0].save("indices_to_test.tmp2.pt").unwrap();
-    }*/
 
     InferenceBatch::new(wids, bases, quals, Tensor::try_from(lens).unwrap(), indices)
 }
@@ -210,10 +169,7 @@ fn inference(
     };
 
     let info_logits = info_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
-    let bases_logits = bases_logits
-        //.argmax(1, false)
-        .to(tch::Device::Cpu)
-        .split_with_sizes(&lens, 0);
+    let bases_logits = bases_logits.to(tch::Device::Cpu).split_with_sizes(&lens, 0);
 
     (batch.wids, info_logits, bases_logits)
 }
@@ -251,13 +207,6 @@ pub(crate) fn inference_worker<P: AsRef<Path>>(
                 });
         }
 
-        /*println!(
-            "Device {}, in: {}, out: {}",
-            d,
-            input_channel.len(),
-            output_channel.len()
-        );*/
-
         output_channel.send(data.consensus_data).unwrap();
     }
 }
@@ -272,13 +221,8 @@ pub(crate) fn prepare_examples(
             // Transform bases (encode) and quals (normalize)
             example.bases.mapv_inplace(|b| BASES_MAP[b as usize]);
 
-            // Transpose: [R, L] -> [L, R]
-            //bases.swap_axes(1, 0);
-            //quals.swap_axes(1, 0);
-
             let tidx = get_target_indices(&example.bases);
 
-            //TODO: Start here.
             ConsensusWindow::new(
                 example.rid,
                 example.wid,
