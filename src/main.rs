@@ -54,6 +54,13 @@ struct FeatGenArgs {
     )]
     feat_gen_threads: usize,
 
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Store base qualities as 2-bit values (4 bins) to reduce memory usage [EXPERIMENTAL]"
+    )]
+    compress_quals: bool,
+
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
     reads: String,
 
@@ -104,6 +111,13 @@ struct InferenceArgs {
     )]
     cluster : String,
 
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Store base qualities as 2-bit values (4 bins) to reduce memory usage [EXPERIMENTAL]"
+    )]
+    compress_quals: bool,
+
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
     reads: String,
 
@@ -129,6 +143,7 @@ fn main() {
                 args.feat_gen_threads,
                 args.window_size,
                 mode,
+                args.compress_quals,
             );
         }
         Commands::Inference(args) => {
@@ -149,6 +164,7 @@ fn main() {
                 args.devices,
                 args.batch_size,
                 mode,
+                args.compress_quals,
             );
         }
     }

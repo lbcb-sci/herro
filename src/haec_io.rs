@@ -4,6 +4,85 @@ use std::{ops::RangeBounds, path::Path};
 use needletail::parse_fastx_file;
 use rustc_hash::FxHashSet;
 
+const QUAL_DECODE: [u8; 4] = [38, 48, 58, 68]; // Phred+33 for Q5, Q15, Q25, Q35
+
+pub struct HAECQual {
+    data: Vec<u8>,
+    length: usize,
+}
+
+impl HAECQual {
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    pub fn get_subseq<R: RangeBounds<usize>>(&self, range: R, buf: &mut [u8]) {
+        let start = match range.start_bound() {
+            std::ops::Bound::Unbounded => 0,
+            std::ops::Bound::Included(s) => *s,
+            std::ops::Bound::Excluded(s) => s + 1,
+        };
+        let end = match range.end_bound() {
+            std::ops::Bound::Unbounded => self.length,
+            std::ops::Bound::Included(e) => e + 1,
+            std::ops::Bound::Excluded(e) => *e,
+        };
+        for (i, pos) in (start..end).enumerate() {
+            let bucket = (self.data[pos >> 2] >> ((pos & 3) << 1)) & 3;
+            buf[i] = QUAL_DECODE[bucket as usize];
+        }
+    }
+}
+
+impl From<&[u8]> for HAECQual {
+    fn from(value: &[u8]) -> Self {
+        let mut data = Vec::with_capacity((value.len() + 3) / 4);
+        let mut byte = 0u8;
+        for (i, &q) in value.iter().enumerate() {
+            let bucket = (q.saturating_sub(33) / 10).min(3);
+            byte |= bucket << ((i & 3) << 1);
+            if (i & 3) == 3 || i == value.len() - 1 {
+                data.push(byte);
+                byte = 0;
+            }
+        }
+        HAECQual { data, length: value.len() }
+    }
+}
+
+pub enum Quals {
+    Full(Vec<u8>),
+    Compressed(HAECQual),
+}
+
+impl Quals {
+    pub fn len(&self) -> usize {
+        match self {
+            Quals::Full(v) => v.len(),
+            Quals::Compressed(q) => q.len(),
+        }
+    }
+
+    pub fn get_subseq<R: RangeBounds<usize>>(&self, range: R, buf: &mut [u8]) {
+        match self {
+            Quals::Full(v) => {
+                let start = match range.start_bound() {
+                    std::ops::Bound::Unbounded => 0,
+                    std::ops::Bound::Included(s) => *s,
+                    std::ops::Bound::Excluded(s) => s + 1,
+                };
+                let end = match range.end_bound() {
+                    std::ops::Bound::Unbounded => v.len(),
+                    std::ops::Bound::Included(e) => e + 1,
+                    std::ops::Bound::Excluded(e) => *e,
+                };
+                buf[..end - start].copy_from_slice(&v[start..end]);
+            }
+            Quals::Compressed(q) => q.get_subseq(range, buf),
+        }
+    }
+}
+
 const BASE_ENCODING: [u64; 128] = [
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
     255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -20,11 +99,11 @@ pub struct HAECRecord {
     pub id: Vec<u8>,
     pub description: Option<Vec<u8>>,
     pub seq: HAECSeq,
-    pub qual: Vec<u8>,
+    pub qual: Quals,
 }
 
 impl HAECRecord {
-    fn new(id: Vec<u8>, description: Option<Vec<u8>>, seq: HAECSeq, qual: Vec<u8>) -> Self {
+    fn new(id: Vec<u8>, description: Option<Vec<u8>>, seq: HAECSeq, qual: Quals) -> Self {
         HAECRecord {
             id,
             description,
@@ -39,6 +118,7 @@ pub fn get_reads<P: AsRef<Path>>(
     min_length: u32,
     core: &Option<FxHashSet<String>>,
     neighbour: &Option<FxHashSet<String>>,
+    compress_quals: bool,
 ) -> Vec<HAECRecord> {
     let mut reader = parse_fastx_file(path).expect("Cannot open file containing reads.");
 
@@ -54,10 +134,12 @@ pub fn get_reads<P: AsRef<Path>>(
         let description = split.next().map(|d| d.to_owned());
 
         let seq = HAECSeq::from(&*record.seq());
-        let qual = record
-            .qual()
-            .expect("Qualities should be present.")
-            .to_owned();
+        let raw_qual = record.qual().expect("Qualities should be present.");
+        let qual = if compress_quals {
+            Quals::Compressed(HAECQual::from(&*raw_qual))
+        } else {
+            Quals::Full(raw_qual.to_owned())
+        };
 
         if let (Some(core), Some(neighbour)) = (&core, &neighbour) {
             if !neighbour.contains(std::str::from_utf8(&id).unwrap())

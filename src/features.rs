@@ -117,6 +117,7 @@ fn get_features_for_ol_window(
     tid: u32,
     max_ins: &[u16],
     qbuffer: &mut [u8],
+    qqual_buf: &mut [u8],
 ) {
     // Handle query sequence
     let (qstart, qend) = if window.overlap.tid == tid {
@@ -132,21 +133,21 @@ fn get_features_for_ol_window(
                 let qlen = (window.qend - window.qstart) as usize;
 
                 query.seq.get_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
+                query.qual.get_subseq(range, &mut qqual_buf[..qlen]);
 
-                Box::new(qbuffer[..qlen].iter().zip(quals))
+                Box::new(qbuffer[..qlen].iter().zip(qqual_buf[..qlen].iter()))
             }
             Strand::Reverse => {
                 let range = (qend - window.qend) as usize..(qend - window.qstart) as usize;
                 let qlen = (window.qend - window.qstart) as usize;
 
                 query.seq.get_rc_subseq(range.clone(), qbuffer);
-                let quals = &query.qual[range];
+                query.qual.get_subseq(range, &mut qqual_buf[..qlen]);
 
                 Box::new(
                     qbuffer[..qlen]
                         .iter()
-                        .zip(quals.iter().rev())
+                        .zip(qqual_buf[..qlen].iter().rev())
                         .map(|(b, q)| (&BASE_LOWER[*b as usize], q)),
                 )
             }
@@ -238,24 +239,19 @@ fn get_features_for_ol_window(
 
 fn write_target_for_window(
     tstart: usize,
-    target: &HAECRecord,
     max_ins: &[u16],
     mut bases: ArrayViewMut1<'_, u8>,
     mut quals: ArrayViewMut1<'_, u8>,
     window_length: usize,
     tbuffer: &[u8],
+    tqual_buf: &[u8],
 ) {
     bases.fill(b'*'); // Fill like forward
-
-    /*let tlen = tstart + window_length - tstart;
-    target
-        .seq
-        .get_subseq(tstart..tstart + window_length, tbuffer);*/
 
     let mut tpos = 0;
     tbuffer[tstart..tstart + window_length]
         .iter()
-        .zip(target.qual[tstart..tstart + window_length].iter())
+        .zip(tqual_buf[tstart..tstart + window_length].iter())
         .enumerate()
         .for_each(|(i, (b, q))| {
             bases[tpos] = *b;
@@ -275,6 +271,8 @@ fn get_features_for_window(
     window_length: usize, // Full window length
     tbuffer: &[u8],
     qbuffer: &mut [u8],
+    tqual_buf: &[u8],
+    qqual_buf: &mut [u8],
 ) -> (Array2<u8>, Array2<u8>) {
     //Get features
     let length = max_ins.iter().map(|v| *v as usize).sum::<usize>() + max_ins.len();
@@ -285,12 +283,12 @@ fn get_features_for_window(
     // First write the target
     write_target_for_window(
         tstart,
-        &reads[tid as usize],
         &max_ins,
         bases.index_axis_mut(Axis(1), 0),
         quals.index_axis_mut(Axis(1), 0),
         window_length,
         tbuffer,
+        tqual_buf,
     );
 
     // Write top-k overlaps for the window
@@ -306,6 +304,7 @@ fn get_features_for_window(
             tid,
             &max_ins,
             qbuffer,
+            qqual_buf,
         )
     });
 
@@ -328,11 +327,12 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
     reads: &'a [HAECRecord],
     overlaps: Vec<Alignment>,
     window_size: u32,
-    (tbuf, qbuf): (&mut [u8], &mut [u8]),
+    (tbuf, qbuf, tqual_buf, qqual_buf): (&mut [u8], &mut [u8], &mut [u8], &mut [u8]),
     feats_output: &mut T,
 ) {
     let read = &reads[rid as usize];
     reads[rid as usize].seq.get_sequence(tbuf);
+    reads[rid as usize].qual.get_subseq(.., &mut tqual_buf[..read.seq.len()]);
 
     // Get overlaps for windows
     let n_windows = (read.seq.len() + window_size as usize - 1) / window_size as usize;
@@ -426,6 +426,8 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             win_len,
             tbuf,
             qbuf,
+            tqual_buf,
+            qqual_buf,
         );
 
         let qids: Vec<_> = windows[i]

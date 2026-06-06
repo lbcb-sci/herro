@@ -53,13 +53,14 @@ pub fn generate_features<T, U, V>(
     threads: usize,
     window_size: u32,
     aln_mode: AlnMode<V>,
+    compress_quals: bool,
 ) where
     T: AsRef<Path> + Send + Sync,
     U: AsRef<Path> + Send + Sync + Clone,
     V: AsRef<Path> + Send,
 {
     // Get fastq reads
-    let reads = parse_reads(&reads_path, window_size, &None, &None);
+    let reads = parse_reads(&reads_path, window_size, &None, &None, compress_quals);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
     let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
@@ -85,6 +86,8 @@ pub fn generate_features<T, U, V>(
                 let mut feats_output = FeatsGenOutput::new(&output_path, pbar_s);
                 let mut tbuf = vec![0; max_len];
                 let mut qbuf = vec![0; max_len];
+                let mut tqual_buf = vec![0; max_len];
+                let mut qqual_buf = vec![0; max_len];
 
                 loop {
                     let (rid, alns) = match alns_receiver.recv() {
@@ -97,7 +100,7 @@ pub fn generate_features<T, U, V>(
                         &reads,
                         alns,
                         window_size,
-                        (&mut tbuf, &mut qbuf),
+                        (&mut tbuf, &mut qbuf, &mut tqual_buf, &mut qqual_buf),
                         &mut feats_output,
                     );
                 }
@@ -120,6 +123,7 @@ pub fn error_correction<T, U, V>(
     devices: Vec<usize>,
     batch_size: usize,
     aln_mode: AlnMode<V>,
+    compress_quals: bool,
 ) where
     T: AsRef<Path> + Send + Sync,
     U: AsRef<Path> + Send + Sync,
@@ -130,7 +134,7 @@ pub fn error_correction<T, U, V>(
     tch::set_num_threads(1);
 
     let (core, neighbour) = read_cluster(&cluster_path);
-    let reads = parse_reads(&reads_path, window_size, &core, &neighbour);
+    let reads = parse_reads(&reads_path, window_size, &core, &neighbour, compress_quals);
     let max_len = reads.iter().map(|r| r.seq.len()).max().unwrap();
 
     let (alns_sender, alns_receiver) = bounded(ALN_CHANNEL_CAPACITY);
@@ -167,6 +171,8 @@ pub fn error_correction<T, U, V>(
                     let mut feats_output = InferenceOutput::new(infer_s, batch_size);
                     let mut tbuf = vec![0; max_len];
                     let mut qbuf = vec![0; max_len];
+                    let mut tqual_buf = vec![0; max_len];
+                    let mut qqual_buf = vec![0; max_len];
 
                     loop {
                         let (rid, alns) = match alns_r.recv() {
@@ -179,7 +185,7 @@ pub fn error_correction<T, U, V>(
                             ref_reads,
                             alns,
                             window_size,
-                            (&mut tbuf, &mut qbuf),
+                            (&mut tbuf, &mut qbuf, &mut tqual_buf, &mut qqual_buf),
                             &mut feats_output,
                         );
                     }
@@ -243,12 +249,13 @@ fn parse_reads<P: AsRef<Path>>(
     window_size: u32,
     core: &Option<HashSet<String>>,
     neighbour: &Option<HashSet<String>>,
+    compress_quals: bool,
 ) -> Vec<HAECRecord> {
     // Get fastq reads
     let spinner = get_parse_reads_spinner(None);
     let md = metadata(&reads_path).unwrap();
     if md.is_file() {
-        let reads = haec_io::get_reads(&reads_path, window_size, core, neighbour);
+        let reads = haec_io::get_reads(&reads_path, window_size, core, neighbour, compress_quals);
         set_parse_reads_spinner_finish(reads.len(), spinner);
         reads
     } else {
@@ -257,7 +264,7 @@ fn parse_reads<P: AsRef<Path>>(
             .unwrap()
             .filter_map(|p| p.ok().and_then(|path| path.to_str().map(|s| s.to_owned())))
             .filter(|s| s.ends_with(".fastq") || s.ends_with(".fastq.gz"))
-            .flat_map(|s| haec_io::get_reads(&s, window_size, core, neighbour))
+            .flat_map(|s| haec_io::get_reads(&s, window_size, core, neighbour, compress_quals))
             .collect();
         set_parse_reads_spinner_finish(reads.len(), spinner);
         reads
