@@ -23,7 +23,7 @@ pub(crate) fn call_mm2<P: AsRef<Path>>(
             "-w17",
             "-e200",
             "-r150",
-            "-m2500",
+            "-m1500",
             "-f0.005",
             "-z200",
             "--dual=yes",
