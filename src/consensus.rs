@@ -91,7 +91,7 @@ fn consensus(
     let mut corrected: Vec<u8> = Vec::new();
 
     for window in data.iter() {
-        if window.n_alns < 5 {
+        if window.n_alns < 2 {
             let start = window.wid as usize * window_size;
             let end = ((window.wid as usize + 1) * window_size).min(read.seq.len());
             let old_len = corrected.len();
