@@ -17,7 +17,7 @@ use crate::haec_io::HAECRecord;
 use crate::inference::{prepare_examples, InferenceData, WindowExample};
 use crate::overlaps::{Alignment, Strand};
 use crate::pbars::PBarNotification;
-use crate::windowing::{extract_windows, OverlapWindow};
+use crate::windowing::{extract_windows, filter_partial_overlap_windows, OverlapWindow};
 
 pub(crate) const TOP_K_SORT: usize = 30;
 
@@ -396,6 +396,8 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
         ovlps_cigar_map.insert(qid, &alignment.cigar);
     }
 
+    filter_partial_overlap_windows(&mut windows, window_size, rid);
+
     // Create directory for the read
     //let output_path = Path::new("features").join(&read.id);
     //create_dir_all(&output_path).expect("Cannot create directory");
@@ -421,6 +423,13 @@ pub(crate) fn extract_features<'a, T: FeaturesOutput<'a>>(
             //let cigar_end = (ow.cigar_end_idx + 1).min(cigar.len());
             overlap_window_filter(&cigar[ow.cigar_start_idx..ow.cigar_end_idx])
         });
+
+        /*println!(
+            "{}\t{}\t{}",
+            std::str::from_utf8(&read.id).unwrap(),
+            i,
+            windows[i].len()
+        );*/
 
         // Sort window to take TOP-K
         windows[i].sort_by_key(|ow| {
