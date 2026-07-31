@@ -34,6 +34,7 @@ mod inference;
 mod mm2;
 mod overlaps;
 mod pbars;
+mod qscore;
 mod windowing;
 
 pub(crate) const READS_BATCH_SIZE: usize = 50_000;
