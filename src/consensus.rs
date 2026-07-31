@@ -13,6 +13,7 @@ use crate::features::SupportedPos;
 
 use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
+use crate::qscore::clamp_qual_byte;
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
 const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
@@ -87,8 +88,9 @@ fn consensus(
     counts: &mut [u8],
     read: &HAECRecord,
     window_size: usize,
-) -> Vec<u8> {
+) -> (Vec<u8>, Vec<u8>) {
     let mut corrected: Vec<u8> = Vec::new();
+    let mut corrected_quals: Vec<u8> = Vec::new();
 
     for window in data.iter() {
         if window.n_alns < 2 {
@@ -97,6 +99,8 @@ fn consensus(
             let old_len = corrected.len();
             corrected.resize(old_len + (end - start), 0);
             read.seq.get_subseq(start..end, &mut corrected[old_len..]);
+
+            corrected_quals.extend(read.qual[start..end].iter().map(|&q| clamp_qual_byte(q)));
             continue;
         }
 
@@ -164,6 +168,7 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
+                    corrected_quals.push(clamp_qual_byte(0)); // TODO(Step 3): real model_qscore
                 }
             } else {
                 // Count bases
@@ -206,18 +211,19 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
+                    corrected_quals.push(clamp_qual_byte(0)); // TODO(Step 4): real vote_qscore
                 }
             }
         }
     }
 
-    corrected
+    (corrected, corrected_quals)
 }
 
 pub(crate) fn consensus_worker(
     reads: &[HAECRecord],
     receiver: Receiver<ConsensusData>,
-    sender: Sender<(usize, Vec<u8>)>,
+    sender: Sender<(usize, Vec<u8>, Vec<u8>)>,
     window_size: usize,
 ) {
     let mut consensus_data = HashMap::default();
@@ -239,9 +245,87 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let seq = consensus(windows, &mut counts, &reads[rid as usize], window_size);
-                sender.send((rid as usize, seq)).unwrap();
+                let (seq, quals) = consensus(windows, &mut counts, &reads[rid as usize], window_size);
+                sender.send((rid as usize, seq, quals)).unwrap();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::haec_io::HAECSeq;
+    use crate::qscore::clamp_qual_byte;
+    use ndarray::Array2;
+
+    fn make_read(seq: &str, qual: Vec<u8>) -> HAECRecord {
+        HAECRecord {
+            id: b"test".to_vec(),
+            description: None,
+            seq: HAECSeq::from(seq.as_bytes()),
+            qual,
+        }
+    }
+
+    #[test]
+    fn case1_copies_uncorrected_bases_and_clamped_quals() {
+        let window_size = 4;
+        let seq = "ACGTACGT";
+        // Chosen to exercise: below Q_MIN (33), passthrough (40, 60), above Q_MAX (126)
+        let raw_quals = vec![33, 40, 60, 126, 50, 55, 33, 70];
+        let read = make_read(seq, raw_quals.clone());
+
+        let window = ConsensusWindow::new(
+            0,
+            0,
+            1, // n_alns < 2 -> Case 1
+            1,
+            Array2::from_elem((1, 1), 0u8),
+            Array2::from_elem((1, 1), 0u8),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
+
+        assert_eq!(corrected, seq.as_bytes()[..window_size].to_vec());
+
+        let expected_quals: Vec<u8> = raw_quals[..window_size]
+            .iter()
+            .map(|&q| clamp_qual_byte(q))
+            .collect();
+        assert_eq!(quals, expected_quals);
+        assert_eq!(corrected.len(), quals.len());
+    }
+
+    #[test]
+    fn case1_last_window_truncates_to_read_length() {
+        let window_size = 5;
+        let seq = "ACGTACG"; // 7 bases: window 1 covers [5,7)
+        let raw_quals = vec![40, 40, 40, 40, 40, 60, 70];
+        let read = make_read(seq, raw_quals);
+
+        let window = ConsensusWindow::new(
+            0,
+            1, // second window
+            1,
+            2,
+            Array2::from_elem((1, 1), 0u8),
+            Array2::from_elem((1, 1), 0u8),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
+
+        assert_eq!(corrected, b"CG".to_vec());
+        assert_eq!(quals, vec![clamp_qual_byte(60), clamp_qual_byte(70)]);
     }
 }

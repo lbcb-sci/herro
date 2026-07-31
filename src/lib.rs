@@ -24,6 +24,7 @@ use crate::{
     features::{FeatsGenOutput, InferenceOutput},
     inference::inference_worker,
     overlaps::alignment_reader,
+    qscore::clamp_qual_byte,
 };
 
 mod aligners;
@@ -268,7 +269,7 @@ fn parse_reads<P: AsRef<Path>>(
 fn correction_writer<U: AsRef<Path>>(
     reads: &[HAECRecord],
     output_path: U,
-    consensus_recv: Receiver<(usize, Vec<u8>)>,
+    consensus_recv: Receiver<(usize, Vec<u8>, Vec<u8>)>,
     pbar_sender: Sender<PBarNotification>,
 ) {
     let file = File::create(output_path).unwrap();
@@ -276,12 +277,12 @@ fn correction_writer<U: AsRef<Path>>(
     let mut processed: HashSet<usize> = HashSet::default();
 
     loop {
-        let (rid, seq) = match consensus_recv.recv() {
+        let (rid, seq, qual) = match consensus_recv.recv() {
             Ok(out) => out,
             Err(_) => break,
         };
 
-        write_sequence(&seq, &reads[rid], &mut writer).unwrap();
+        write_sequence(&seq, &qual, &reads[rid], &mut writer).unwrap();
         processed.insert(rid);
         pbar_sender.send(PBarNotification::Inc).unwrap();
     }
@@ -289,13 +290,21 @@ fn correction_writer<U: AsRef<Path>>(
     for (rid, read) in reads.iter().enumerate() {
         if !processed.contains(&rid) {
             let seq = Vec::<u8>::from(&read.seq);
-            write_sequence(&seq, read, &mut writer).unwrap();
+            let qual: Vec<u8> = read.qual.iter().map(|&q| clamp_qual_byte(q)).collect();
+            write_sequence(&seq, &qual, read, &mut writer).unwrap();
         }
     }
 }
 
-fn write_sequence<W: Write>(seq: &[u8], read: &HAECRecord, writer: &mut W) -> Result<(), Error> {
-    writer.write_all(b">")?;
+fn write_sequence<W: Write>(
+    seq: &[u8],
+    qual: &[u8],
+    read: &HAECRecord,
+    writer: &mut W,
+) -> Result<(), Error> {
+    debug_assert_eq!(seq.len(), qual.len(), "sequence and quality lengths must match");
+
+    writer.write_all(b"@")?;
     writer.write_all(&read.id)?;
     writer.write_all(b" ")?;
 
@@ -305,6 +314,8 @@ fn write_sequence<W: Write>(seq: &[u8], read: &HAECRecord, writer: &mut W) -> Re
     writer.write_all(b"\n")?;
 
     writer.write_all(seq)?;
+    writer.write_all(b"\n+\n")?;
+    writer.write_all(qual)?;
     write!(writer, "\n")?;
 
     Ok(())
