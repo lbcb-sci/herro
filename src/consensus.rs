@@ -13,10 +13,11 @@ use crate::features::SupportedPos;
 
 use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
-use crate::qscore::{clamp_qual_byte, model_qscore};
+use crate::qscore::{clamp_qual_byte, model_qscore, vote_qscore, WeightTable};
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
 const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
+const GAP_BIN: usize = 4;
 
 // Bases, tidx, supported, logits
 pub(crate) struct ConsensusWindow {
@@ -86,6 +87,7 @@ where
 fn consensus(
     data: ConsensusData,
     counts: &mut [u8],
+    weights: &WeightTable,
     read: &HAECRecord,
     window_size: usize,
 ) -> (Vec<u8>, Vec<u8>) {
@@ -108,6 +110,7 @@ fn consensus(
         //let n_rows = (window.n_alns + 1).min(TOP_K + 1);
         let n_rows = window.n_alns + 1;
         let bases = window.bases.slice(s![.., ..n_rows as usize]);
+        let quals = window.quals.slice(s![.., ..n_rows as usize]);
         let maybe_info = match window.supported.len() {
             0 => HashMap::default(),
             _ => window
@@ -120,7 +123,7 @@ fn consensus(
         };
 
         let (mut pos, mut ins) = (-1i32, 0);
-        for col in bases.axis_iter(Axis(0)) {
+        for (col, qcol) in bases.axis_iter(Axis(0)).zip(quals.axis_iter(Axis(0))) {
             if col[0] == BASES_MAP[b'*' as usize] {
                 ins += 1;
             } else {
@@ -171,11 +174,22 @@ fn consensus(
                     corrected_quals.push(model_qscore(b, argmax as usize));
                 }
             } else {
-                // Count bases
+                // Count bases and accumulate each row's vote weight into its base's bin.
+                // Rows with no alignment ('.') contribute neither a count nor a weight.
                 counts.iter_mut().for_each(|c| *c = 0);
-                col.iter().for_each(|&b| {
+                let mut bin_scores = [0f32; 5];
+                col.iter().zip(qcol.iter()).for_each(|(&b, &q)| {
                     if b != BASES_MAP[b'.' as usize] {
-                        counts[BASES_UPPER_COUNTER[b as usize]] += 1;
+                        let bin = BASES_UPPER_COUNTER[b as usize];
+                        counts[bin] += 1;
+
+                        // Gaps carry no real quality (the quals array only holds a b'!'
+                        // placeholder there), so they are weighted at Q_GAP instead.
+                        bin_scores[bin] += if bin == GAP_BIN {
+                            weights.weight_for_gap()
+                        } else {
+                            weights.weight_for_qual_byte(q)
+                        };
                     }
                 });
 
@@ -211,7 +225,11 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
-                    corrected_quals.push(clamp_qual_byte(0)); // TODO(Step 4): real vote_qscore
+
+                    // `base` is uppercase ACGT here, for which BASES_MAP is the inverse of
+                    // BASES_UPPER and so yields the bin index directly.
+                    let called_bin = BASES_MAP[base as usize] as usize;
+                    corrected_quals.push(vote_qscore(&bin_scores, called_bin));
                 }
             }
         }
@@ -228,6 +246,7 @@ pub(crate) fn consensus_worker(
 ) {
     let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];
+    let weights = WeightTable::new();
     loop {
         let output = match receiver.recv() {
             Ok(output) => output,
@@ -245,7 +264,13 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let (seq, quals) = consensus(windows, &mut counts, &reads[rid as usize], window_size);
+                let (seq, quals) = consensus(
+                    windows,
+                    &mut counts,
+                    &weights,
+                    &reads[rid as usize],
+                    window_size,
+                );
                 sender.send((rid as usize, seq, quals)).unwrap();
             }
         }
@@ -258,6 +283,30 @@ mod tests {
     use crate::haec_io::HAECSeq;
     use crate::qscore::clamp_qual_byte;
     use ndarray::Array2;
+
+    const Q20: u8 = 33 + 20;
+    const Q_PLACEHOLDER: u8 = b'!'; // what features.rs writes where no base aligned
+
+    fn q_byte(q: u8) -> u8 {
+        33 + q
+    }
+
+    /// Single-position window with no model support, so every test below takes the Case 3 path.
+    fn vote_window(row_bases: Vec<u8>, row_quals: Vec<u8>) -> ConsensusWindow {
+        let n_rows = row_bases.len();
+        ConsensusWindow::new(
+            0,
+            0,
+            (n_rows - 1) as u8, // n_rows == n_alns + 1
+            1,
+            Array2::from_shape_vec((1, n_rows), row_bases).unwrap(),
+            Array2::from_shape_vec((1, n_rows), row_quals).unwrap(),
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        )
+    }
 
     fn make_read(seq: &str, qual: Vec<u8>) -> HAECRecord {
         HAECRecord {
@@ -290,7 +339,8 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, window_size);
 
         assert_eq!(corrected, seq.as_bytes()[..window_size].to_vec());
 
@@ -323,7 +373,8 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, window_size);
 
         assert_eq!(corrected, b"CG".to_vec());
         assert_eq!(quals, vec![clamp_qual_byte(60), clamp_qual_byte(70)]);
@@ -355,7 +406,8 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
 
         assert_eq!(corrected, b"A".to_vec());
         assert_eq!(quals, vec![model_qscore(&logits, 0)]);
@@ -385,7 +437,8 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
 
         assert!(corrected.is_empty(), "gap call must not emit a base");
         assert!(quals.is_empty(), "gap call must not emit a qual either");
@@ -418,7 +471,8 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 2);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 2);
 
         assert_eq!(corrected, b"AG".to_vec());
         assert_eq!(
@@ -457,12 +511,101 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 2);
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 2);
 
         // Row 0 (unsupported) goes through Case 3's majority vote over all-'A' rows -> 'A'.
         // Row 1 (supported at (0,1)) is scored by the model, independent of its gap-coded col[0].
         assert_eq!(corrected, b"AC".to_vec());
         assert_eq!(corrected.len(), quals.len(), "bases and quals must stay in sync across cases");
         assert_eq!(quals[1], model_qscore(&logits_c, 1));
+    }
+
+    #[test]
+    fn case3_eight_two_split_matches_pinned_vote_qscore() {
+        // 8 rows vote 'A', 2 vote 'C', all at Q20 -> S = [8w20, 2w20, 0, 0, 0], called bin 0.
+        // Same scores as qscore's vote_qscore_eight_two_split_at_q20 test, which pins Q36.
+        let read = make_read("A", vec![q_byte(40)]);
+        let window = vote_window(vec![0, 0, 0, 0, 0, 0, 0, 0, 1, 1], vec![Q20; 10]);
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![q_byte(36)]);
+    }
+
+    #[test]
+    fn case3_gap_rows_weighted_at_q_gap_not_the_placeholder_qual() {
+        // 3 rows vote 'A' at Q20, 3 vote gap. The quals array holds only b'!' (Q0) for the gap
+        // rows, so reading it instead of substituting Q_GAP would under-weight the gap bin and
+        // inflate the score to Q14 rather than the correct Q8.
+        let read = make_read("A", vec![q_byte(40)]);
+        let window = vote_window(
+            vec![0, 0, 0, 4, 4, 4],
+            vec![Q20, Q20, Q20, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER],
+        );
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+
+        // 3-3 tie with the target base among the winners -> target base 'A' is kept.
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![q_byte(8)]);
+    }
+
+    #[test]
+    fn case3_unaligned_rows_contribute_no_weight() {
+        // 8 rows vote 'A' at Q20; the 2 '.' rows carry a high qual byte but must be skipped
+        // entirely (they are also outside BASES_UPPER_COUNTER's range, so including them
+        // would panic rather than merely skew the score).
+        let read = make_read("A", vec![q_byte(40)]);
+        let window = vote_window(
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 10, 10],
+            vec![Q20, Q20, Q20, Q20, Q20, Q20, Q20, Q20, b'~', b'~'],
+        );
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+
+        // S = [8*w20, 0, 0, 0, 0] -> the unanimous-8 score, unaffected by the '.' rows.
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![q_byte(39)]);
+    }
+
+    #[test]
+    fn case3_reverse_strand_rows_fold_into_forward_bins() {
+        // 4 'A' + 4 'a' + 2 'C' must score identically to 8 'A' + 2 'C': lowercase
+        // (reverse-strand) rows contribute their weight to the same bin as uppercase.
+        let read = make_read("A", vec![q_byte(40)]);
+        let mixed = vote_window(vec![0, 0, 0, 0, 5, 5, 5, 5, 1, 1], vec![Q20; 10]);
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![mixed], &mut counts, &weights, &read, 1);
+
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![q_byte(36)]);
+    }
+
+    #[test]
+    fn case3_gap_called_emits_no_base_and_no_qual() {
+        // 4 gap rows outvote the single 'A' target row -> the column is deleted, so neither a
+        // base nor a qual byte may be emitted.
+        let read = make_read("A", vec![q_byte(40)]);
+        let window = vote_window(
+            vec![0, 4, 4, 4, 4],
+            vec![Q20, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER],
+        );
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+
+        assert!(corrected.is_empty(), "gap call must not emit a base");
+        assert!(quals.is_empty(), "gap call must not emit a qual either");
     }
 }

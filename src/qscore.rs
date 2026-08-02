@@ -1,5 +1,3 @@
-#![allow(dead_code)] // wired into consensus.rs in a later step
-
 // Q-score estimation for corrected-read output.
 //
 // Three cases produce a Phred quality byte for each output base:
