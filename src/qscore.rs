@@ -145,7 +145,10 @@ mod tests {
     #[test]
     fn weight_for_gap_matches_q_gap_lookup() {
         let table = WeightTable::new();
-        assert_eq!(table.weight_for_gap(), table.weight_for_qual_byte(q_byte(Q_GAP)));
+        assert_eq!(
+            table.weight_for_gap(),
+            table.weight_for_qual_byte(q_byte(Q_GAP))
+        );
     }
 
     #[test]
@@ -154,7 +157,11 @@ mod tests {
         let w = table.weight_for_qual_byte(q_byte(20));
         let bin_scores = [10.0 * w, 0.0, 0.0, 0.0, 0.0]; // 10 reads all vote bin 0
         let q = vote_qscore(&bin_scores, 0);
-        assert_eq!(q, q_byte(Q_MAX), "known saturation ceiling at these settings");
+        assert_eq!(
+            q,
+            q_byte(Q_MAX),
+            "known saturation ceiling at these settings"
+        );
     }
 
     #[test]
@@ -166,11 +173,9 @@ mod tests {
         let bin_scores = [8.0 * w, 2.0 * w, 0.0, 0.0, 0.0];
         let q = vote_qscore(&bin_scores, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
-        assert!(
-            (34..=38).contains(&phred_q),
-            "expected high-Q overconfidence around Q36, got Q{}",
-            phred_q
-        );
+        // p_err = eps_sys + (1-eps_sys)*(1-p) with p = softmax(8w, 2w, 0, 0, 0)[0], w = w(q=20)
+        // -> p_err ~= 2.4600e-4 -> Q = -10*log10(p_err) ~= 36.09 -> rounds to 36.
+        assert_eq!(phred_q, 36, "expected high-Q overconfidence at exactly Q36");
     }
 
     #[test]
@@ -180,7 +185,12 @@ mod tests {
         let bin_scores = [w_low, 0.0, 0.0, 0.0, 0.0];
         let q = vote_qscore(&bin_scores, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
-        assert!(phred_q < 15, "single low-quality vote should not score high, got Q{}", phred_q);
+        // p_err = eps_sys + (1-eps_sys)*(1-p) with p = softmax(w(q=5), 0, 0, 0, 0)[0]
+        // -> p_err ~= 0.700061 -> Q = -10*log10(p_err) ~= 1.549 -> rounds to 2.
+        assert_eq!(
+            phred_q, 2,
+            "single low-quality vote should reflect its own low quality"
+        );
     }
 
     #[test]
@@ -188,7 +198,10 @@ mod tests {
         let table = WeightTable::new();
         let w_gap = table.weight_for_gap();
         let w_q1 = table.weight_for_qual_byte(q_byte(Q_GAP)); // Q_GAP treated as a real qual
-        assert_eq!(w_gap, w_q1, "gap weight must come from Q_GAP, matching a q=Q_GAP lookup");
+        assert_eq!(
+            w_gap, w_q1,
+            "gap weight must come from Q_GAP, matching a q=Q_GAP lookup"
+        );
     }
 
     #[test]
@@ -198,7 +211,12 @@ mod tests {
         let bin_scores = [0.0; 5];
         let q = vote_qscore(&bin_scores, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
-        assert!(phred_q <= 10, "no evidence should not yield a confident score, got Q{}", phred_q);
+        // All scores tied at 0 -> uniform softmax over 5 bins -> p = 0.2, p_err ~= 0.80002
+        // -> Q = -10*log10(p_err) ~= 0.969 -> rounds to 1.
+        assert_eq!(
+            phred_q, 1,
+            "no evidence should yield the uniform-prior score, not a confident one"
+        );
     }
 
     #[test]
@@ -213,7 +231,11 @@ mod tests {
         let logits = [0.0, 0.0, 0.0, 0.0, 0.0];
         let q = model_qscore(&logits, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
-        assert!(phred_q <= 2, "uniform logits over 5 classes should score near 0, got Q{}", phred_q);
+        assert!(
+            phred_q <= 2,
+            "uniform logits over 5 classes should score near 0, got Q{}",
+            phred_q
+        );
     }
 
     #[test]
@@ -246,6 +268,30 @@ mod tests {
         // a finite 1-p (~1.0), not NaN from an inf/inf division.
         let bin_scores = [0.0, 1000.0, 0.0, 0.0, 0.0];
         let q = vote_qscore(&bin_scores, 0);
-        assert_eq!(q, q_byte(0), "overwhelming contrary evidence should saturate to Q0, not NaN");
+        assert_eq!(
+            q,
+            q_byte(0),
+            "overwhelming contrary evidence should saturate to Q0, not NaN"
+        );
+    }
+
+    #[test]
+    fn gap_vote_contributes_q_gap_weight_to_gap_bin() {
+        let table = WeightTable::new();
+
+        let w20 = table.weight_for_qual_byte(q_byte(20));
+        let w30 = table.weight_for_qual_byte(q_byte(30));
+        let w10 = table.weight_for_qual_byte(q_byte(10));
+        let w_gap = table.weight_for_gap();
+
+        let bin_scores = [
+            w20 + w30, // two A votes
+            w10,       // one C vote
+            0.0,       // no G votes
+            0.0,       // no T votes
+            w_gap,     // one gap vote
+        ];
+
+        assert_eq!(vote_qscore(&bin_scores, 0), q_byte(8));
     }
 }

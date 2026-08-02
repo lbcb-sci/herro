@@ -13,7 +13,7 @@ use crate::features::SupportedPos;
 
 use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
-use crate::qscore::clamp_qual_byte;
+use crate::qscore::{clamp_qual_byte, model_qscore};
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
 const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
@@ -168,7 +168,7 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
-                    corrected_quals.push(clamp_qual_byte(0)); // TODO(Step 3): real model_qscore
+                    corrected_quals.push(model_qscore(b, argmax as usize));
                 }
             } else {
                 // Count bases
@@ -327,5 +327,142 @@ mod tests {
 
         assert_eq!(corrected, b"CG".to_vec());
         assert_eq!(quals, vec![clamp_qual_byte(60), clamp_qual_byte(70)]);
+    }
+
+    #[test]
+    fn case2_model_corrected_base_uses_model_qscore() {
+        use crate::features::SupportedPos;
+        use crate::qscore::model_qscore;
+
+        let read = make_read("A", vec![40]);
+
+        // One position, 3 pileup rows; only col[0] (not a gap) drives pos/ins tracking here.
+        let bases = Array2::from_elem((1, 3), 0u8); // 0 = BASES_MAP['A'], i.e. not a gap
+        let quals = Array2::from_elem((1, 3), 0u8);
+        let logits = vec![10.0, -10.0, -10.0, -10.0, -10.0]; // argmax -> 'A' (index 0)
+
+        let window = ConsensusWindow::new(
+            0,
+            0,
+            2, // n_alns >= 2 -> skip Case 1
+            1,
+            bases,
+            quals,
+            Vec::new(),
+            vec![SupportedPos::new(0, 0)],
+            Some(vec![0.0]),
+            Some(vec![logits.clone()]),
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
+
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![model_qscore(&logits, 0)]);
+    }
+
+    #[test]
+    fn case2_gap_called_base_emits_no_base_and_no_qual() {
+        use crate::features::SupportedPos;
+
+        let read = make_read("A", vec![40]);
+
+        let bases = Array2::from_elem((1, 3), 0u8); // pos 0, not a gap column
+        let quals = Array2::from_elem((1, 3), 0u8);
+        let logits = vec![-10.0, -10.0, -10.0, -10.0, 10.0]; // argmax -> index 4 == '*'
+
+        let window = ConsensusWindow::new(
+            0,
+            0,
+            2,
+            1,
+            bases,
+            quals,
+            Vec::new(),
+            vec![SupportedPos::new(0, 0)],
+            Some(vec![0.0]),
+            Some(vec![logits]),
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
+
+        assert!(corrected.is_empty(), "gap call must not emit a base");
+        assert!(quals.is_empty(), "gap call must not emit a qual either");
+    }
+
+    #[test]
+    fn case2_multiple_supported_positions_each_get_independent_qscore() {
+        use crate::features::SupportedPos;
+        use crate::qscore::model_qscore;
+
+        let read = make_read("AG", vec![40, 40]);
+
+        // Two consecutive real positions (pos 0 and pos 1, both ins 0).
+        let bases = Array2::from_elem((2, 3), 0u8);
+        let quals = Array2::from_elem((2, 3), 0u8);
+        let logits_a = vec![10.0, -10.0, -10.0, -10.0, -10.0]; // confident 'A'
+        let logits_g = vec![-5.0, -5.0, 3.0, -5.0, -5.0]; // less confident 'G'
+
+        let window = ConsensusWindow::new(
+            0,
+            0,
+            2,
+            1,
+            bases,
+            quals,
+            Vec::new(),
+            vec![SupportedPos::new(0, 0), SupportedPos::new(1, 0)],
+            Some(vec![0.0, 0.0]),
+            Some(vec![logits_a.clone(), logits_g.clone()]),
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 2);
+
+        assert_eq!(corrected, b"AG".to_vec());
+        assert_eq!(
+            quals,
+            vec![model_qscore(&logits_a, 0), model_qscore(&logits_g, 2)]
+        );
+        // The two positions have different confidence, so they must not collapse to the same Q.
+        assert_ne!(quals[0], quals[1]);
+    }
+
+    #[test]
+    fn case2_supported_insertion_position_uses_correct_pos_ins_key() {
+        use crate::features::SupportedPos;
+        use crate::qscore::model_qscore;
+
+        let read = make_read("AC", vec![40, 40]);
+
+        // Row 0: real position (pos 0, ins 0), left unsupported -> falls through to Case 3.
+        // Row 1: insertion column (col[0] == gap code) -> pos stays 0, ins becomes 1.
+        let mut bases = Array2::from_elem((2, 3), 0u8);
+        bases.row_mut(1).fill(4); // BASES_MAP['*'] == 4, marks an insertion column
+        let quals = Array2::from_elem((2, 3), 0u8);
+        let logits_c = vec![-5.0, 10.0, -5.0, -5.0, -5.0]; // confident 'C', at the insertion slot
+
+        let window = ConsensusWindow::new(
+            0,
+            0,
+            2,
+            1,
+            bases,
+            quals,
+            Vec::new(),
+            vec![SupportedPos::new(0, 1)], // keyed on the insertion (pos=0, ins=1), not (0, 0)
+            Some(vec![0.0]),
+            Some(vec![logits_c.clone()]),
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 2);
+
+        // Row 0 (unsupported) goes through Case 3's majority vote over all-'A' rows -> 'A'.
+        // Row 1 (supported at (0,1)) is scored by the model, independent of its gap-coded col[0].
+        assert_eq!(corrected, b"AC".to_vec());
+        assert_eq!(corrected.len(), quals.len(), "bases and quals must stay in sync across cases");
+        assert_eq!(quals[1], model_qscore(&logits_c, 1));
     }
 }
