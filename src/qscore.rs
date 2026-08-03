@@ -11,14 +11,32 @@
 // softmax is exactly the naive-Bayes posterior under a uniform prior; LAMBDA is a temperature
 // compensating for the fact that aligned rows are not actually independent evidence.
 
-pub(crate) const LAMBDA: f32 = 0.25;
-pub(crate) const EPS_SYS: f32 = 1e-4;
+pub(crate) const LAMBDA: f32 = 0.15; // 0.25;
 pub(crate) const Q_GAP: u8 = 10;
 pub(crate) const Q_MIN: u8 = 1;
-pub(crate) const Q_MAX: u8 = 40;
+pub(crate) const Q_MAX: u8 = 90;
 pub(crate) const MODEL_TEMPERATURE: f32 = 1.0;
 
 const QUAL_ASCII_OFFSET: i32 = 33; // Phred+33 encoding used throughout this crate
+
+/// Irreducible systematic error floor, added to every `P_err` before it becomes a Q-score.
+/// The naive-Bayes model treats aligned rows as independent evidence, so a deep pileup drives
+/// `1-p` to values like 1e-20 — meaningless, because the failure modes that actually matter
+/// (misalignment, collapsed repeats, chimeras, systematic basecaller error) are correlated
+/// across every row and invisible to the vote. Flooring `P_err` makes the emitted Q approach
+/// `Q_MAX` asymptotically instead of racing past it.
+///
+/// Derived from `Q_MAX` rather than set independently: both express the same thing — how
+/// confident this estimator is allowed to get — so if they are allowed to drift apart, the
+/// lower of the two silently governs and the other becomes dead. Tying them also keeps Case 1
+/// (bounded by `clamp_qual_byte`) on the same scale as Cases 2 and 3 (bounded by this floor).
+///
+/// Not a `const` because `powf` is not const-evaluable; with a constant argument LLVM folds
+/// this to a literal, so there is no per-base cost.
+#[inline(always)]
+fn eps_sys() -> f32 {
+    10f32.powf(-(Q_MAX as f32) / 10.0)
+}
 
 /// exp() overflows f32 for inputs > ~88; clamp each term below that so a sum of such terms
 /// stays finite (and the resulting 1-p correctly saturates to ~1.0 instead of becoming NaN
@@ -89,7 +107,8 @@ fn stable_one_minus_p(scores: &[f32], called_idx: usize) -> f32 {
 /// existing tie-break vote's call, not necessarily argmax of `bin_scores`).
 pub(crate) fn vote_qscore(bin_scores: &[f32; 5], called_bin: usize) -> u8 {
     let one_minus_p = stable_one_minus_p(bin_scores, called_bin);
-    let p_err = EPS_SYS + (1.0 - EPS_SYS) * one_minus_p;
+    let eps = eps_sys();
+    let p_err = eps + (1.0 - eps) * one_minus_p;
     err_to_phred(p_err)
 }
 
@@ -99,7 +118,8 @@ pub(crate) fn vote_qscore(bin_scores: &[f32; 5], called_bin: usize) -> u8 {
 pub(crate) fn model_qscore(logits: &[f32], called_idx: usize) -> u8 {
     let scaled: Vec<f32> = logits.iter().map(|&l| l / MODEL_TEMPERATURE).collect();
     let one_minus_p = stable_one_minus_p(&scaled, called_idx);
-    let p_err = EPS_SYS + (1.0 - EPS_SYS) * one_minus_p;
+    let eps = eps_sys();
+    let p_err = eps + (1.0 - eps) * one_minus_p;
     err_to_phred(p_err)
 }
 
@@ -137,7 +157,7 @@ mod tests {
         let at_min = table.weight_for_qual_byte(q_byte(Q_MIN));
         assert!((below - at_min).abs() < 1e-6);
 
-        let above = table.weight_for_qual_byte(q_byte(90));
+        let above = table.weight_for_qual_byte(q_byte(93)); // highest Phred FASTQ can encode
         let at_max = table.weight_for_qual_byte(q_byte(Q_MAX));
         assert!((above - at_max).abs() < 1e-6);
     }
@@ -152,10 +172,13 @@ mod tests {
     }
 
     #[test]
-    fn vote_qscore_saturates_at_q_max_for_ten_agreeing_reads_at_q20() {
+    fn vote_qscore_saturates_at_q_max_for_thirty_agreeing_reads_at_q20() {
+        // Documents where the eps_sys() floor takes over at these settings: 27 unanimous Q20
+        // rows is the first depth that rounds to Q_MAX, and no amount of further agreement
+        // pushes past it. Ten rows (the old fixture) now scores Q33, well short of the ceiling.
         let table = WeightTable::new();
         let w = table.weight_for_qual_byte(q_byte(20));
-        let bin_scores = [10.0 * w, 0.0, 0.0, 0.0, 0.0]; // 10 reads all vote bin 0
+        let bin_scores = [30.0 * w, 0.0, 0.0, 0.0, 0.0]; // 30 reads all vote bin 0
         let q = vote_qscore(&bin_scores, 0);
         assert_eq!(
             q,
@@ -174,8 +197,10 @@ mod tests {
         let q = vote_qscore(&bin_scores, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
         // p_err = eps_sys + (1-eps_sys)*(1-p) with p = softmax(8w, 2w, 0, 0, 0)[0], w = w(q=20)
-        // -> p_err ~= 2.4600e-4 -> Q = -10*log10(p_err) ~= 36.09 -> rounds to 36.
-        assert_eq!(phred_q, 36, "expected high-Q overconfidence at exactly Q36");
+        // -> p_err ~= 6.8330e-3 -> Q = -10*log10(p_err) ~= 21.65 -> rounds to 22.
+        // A true 80/20 minor allele is only Q7, so this is still overconfident, just less so
+        // than the Q36 the old LAMBDA=0.25 / eps=1e-4 settings gave.
+        assert_eq!(phred_q, 22, "expected high-Q overconfidence at exactly Q22");
     }
 
     #[test]
@@ -186,9 +211,11 @@ mod tests {
         let q = vote_qscore(&bin_scores, 0);
         let phred_q = q - QUAL_ASCII_OFFSET as u8;
         // p_err = eps_sys + (1-eps_sys)*(1-p) with p = softmax(w(q=5), 0, 0, 0, 0)[0]
-        // -> p_err ~= 0.700061 -> Q = -10*log10(p_err) ~= 1.549 -> rounds to 2.
+        // -> p_err ~= 0.743216 -> Q = -10*log10(p_err) ~= 1.289 -> rounds to 1.
+        // NOTE: at LAMBDA=0.15 this now coincides with the Q_MIN floor, so the assertion no
+        // longer distinguishes "correctly low" from "clamped up from below".
         assert_eq!(
-            phred_q, 2,
+            phred_q, 1,
             "single low-quality vote should reflect its own low quality"
         );
     }
@@ -220,10 +247,12 @@ mod tests {
     }
 
     #[test]
-    fn model_qscore_peaked_logits_near_q_max() {
+    fn model_qscore_peaked_logits_scores_high() {
+        // 1-p = 4*exp(-20)/(1 + 4*exp(-20)) ~= 8.2e-9, well above eps_sys() = 1e-9, so this
+        // lands at Q80 rather than being pinned to the Q_MAX ceiling.
         let logits = [10.0, -10.0, -10.0, -10.0, -10.0];
         let q = model_qscore(&logits, 0);
-        assert_eq!(q, q_byte(Q_MAX));
+        assert_eq!(q - QUAL_ASCII_OFFSET as u8, 80);
     }
 
     #[test]
@@ -252,8 +281,20 @@ mod tests {
     fn err_to_phred_boundary_values() {
         // p_err = 1.0 -> Q = 0 exactly, clamped up to the Q_MIN floor
         assert_eq!(err_to_phred(1.0), q_byte(Q_MIN));
-        // p_err = EPS_SYS floor -> Q = 40 exactly
-        assert_eq!(err_to_phred(EPS_SYS), q_byte(Q_MAX));
+        // p_err = the eps_sys() floor -> Q = Q_MAX exactly, by construction of eps_sys()
+        assert_eq!(err_to_phred(eps_sys()), q_byte(Q_MAX));
+    }
+
+    #[test]
+    fn eps_sys_floor_and_q_max_ceiling_agree() {
+        // The coupling: eps_sys() is derived from Q_MAX so the systematic error floor and the
+        // output ceiling cannot drift apart and leave one of them silently dead.
+        assert!(((-10.0 * eps_sys().log10()) - Q_MAX as f32).abs() < 1e-3);
+
+        // Consequence: the ceiling is reached by the floor, not by err_to_phred's clamp, and
+        // no amount of agreement pushes past it.
+        let overwhelming = [1000.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(vote_qscore(&overwhelming, 0), q_byte(Q_MAX));
     }
 
     #[test]
@@ -293,6 +334,6 @@ mod tests {
             w_gap,     // one gap vote
         ];
 
-        assert_eq!(vote_qscore(&bin_scores, 0), q_byte(8));
+        assert_eq!(vote_qscore(&bin_scores, 0), q_byte(4));
     }
 }

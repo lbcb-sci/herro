@@ -526,7 +526,7 @@ mod tests {
     #[test]
     fn case3_eight_two_split_matches_pinned_vote_qscore() {
         // 8 rows vote 'A', 2 vote 'C', all at Q20 -> S = [8w20, 2w20, 0, 0, 0], called bin 0.
-        // Same scores as qscore's vote_qscore_eight_two_split_at_q20 test, which pins Q36.
+        // Same scores as qscore's vote_qscore_eight_two_split_at_q20 test, which pins Q22.
         let read = make_read("A", vec![q_byte(40)]);
         let window = vote_window(vec![0, 0, 0, 0, 0, 0, 0, 0, 1, 1], vec![Q20; 10]);
 
@@ -535,7 +535,7 @@ mod tests {
         let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
 
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(36)]);
+        assert_eq!(quals, vec![q_byte(22)]);
     }
 
     #[test]
@@ -555,18 +555,18 @@ mod tests {
         let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
 
         // 5-5 tie -> resolved to the target base ('A', col[0]).
-        // S = [5*w(Q30), 5*w(Q10), 0, 0, 0] -> p_err ~= 0.0029609 -> Q ~= 25.29 -> rounds to 25.
+        // S = [5*w(Q30), 5*w(Q10), 0, 0, 0] -> p_err ~= 0.0340134 -> Q ~= 14.68 -> rounds to 15.
         // A fixed-Q20 bug would instead score both bins identically (S = [5w20, 5w20, ...]),
-        // giving Q3 instead of Q25 -- so this catches that class of bug.
+        // giving Q3 instead of Q15 -- so this catches that class of bug.
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(25)]);
+        assert_eq!(quals, vec![q_byte(15)]);
     }
 
     #[test]
     fn case3_gap_rows_weighted_at_q_gap_not_the_placeholder_qual() {
         // 3 rows vote 'A' at Q20, 3 vote gap. The quals array holds only b'!' (Q0) for the gap
         // rows, so reading it instead of substituting Q_GAP would under-weight the gap bin and
-        // inflate the score to Q14 rather than the correct Q8.
+        // inflate the score to Q7 rather than the correct Q5.
         let read = make_read("A", vec![q_byte(40)]);
         let window = vote_window(
             vec![0, 0, 0, 4, 4, 4],
@@ -579,7 +579,7 @@ mod tests {
 
         // 3-3 tie with the target base among the winners -> target base 'A' is kept.
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(8)]);
+        assert_eq!(quals, vec![q_byte(5)]);
     }
 
     #[test]
@@ -599,7 +599,7 @@ mod tests {
 
         // S = [8*w20, 0, 0, 0, 0] -> the unanimous-8 score, unaffected by the '.' rows.
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(39)]);
+        assert_eq!(quals, vec![q_byte(25)]);
     }
 
     #[test]
@@ -614,7 +614,7 @@ mod tests {
         let (corrected, quals) = consensus(vec![mixed], &mut counts, &weights, &read, 1);
 
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(36)]);
+        assert_eq!(quals, vec![q_byte(22)]);
     }
 
     #[test]
