@@ -284,7 +284,9 @@ mod tests {
     use crate::qscore::clamp_qual_byte;
     use ndarray::Array2;
 
+    const Q10: u8 = 33 + 10;
     const Q20: u8 = 33 + 20;
+    const Q30: u8 = 33 + 30;
     const Q_PLACEHOLDER: u8 = b'!'; // what features.rs writes where no base aligned
 
     fn q_byte(q: u8) -> u8 {
@@ -534,6 +536,30 @@ mod tests {
 
         assert_eq!(corrected, b"A".to_vec());
         assert_eq!(quals, vec![q_byte(36)]);
+    }
+
+    #[test]
+    fn case3_equal_vote_counts_weighted_by_each_rows_own_quality() {
+        // 5 rows vote 'A' at Q30, 5 vote 'C' at Q10: equal COUNTS (5-5), so this only
+        // distinguishes the two bases via per-row quality. A implementation that hardcoded a
+        // single quality (e.g. Q20) for every row -- rather than reading each row's own qual
+        // byte -- would still pass every other Case 3 test here, since they all use one
+        // uniform quality across every voting row.
+        let read = make_read("A", vec![q_byte(40)]);
+        let mut row_quals = vec![Q30; 5];
+        row_quals.extend(vec![Q10; 5]);
+        let window = vote_window(vec![0, 0, 0, 0, 0, 1, 1, 1, 1, 1], row_quals);
+
+        let mut counts = [0u8; 5];
+        let weights = WeightTable::new();
+        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+
+        // 5-5 tie -> resolved to the target base ('A', col[0]).
+        // S = [5*w(Q30), 5*w(Q10), 0, 0, 0] -> p_err ~= 0.0029609 -> Q ~= 25.29 -> rounds to 25.
+        // A fixed-Q20 bug would instead score both bins identically (S = [5w20, 5w20, ...]),
+        // giving Q3 instead of Q25 -- so this catches that class of bug.
+        assert_eq!(corrected, b"A".to_vec());
+        assert_eq!(quals, vec![q_byte(25)]);
     }
 
     #[test]
