@@ -61,10 +61,12 @@ pub(crate) fn clamp_qual_byte(ascii_qual: u8) -> u8 {
     (QUAL_ASCII_OFFSET + q) as u8
 }
 
-/// `P_err -> Phred ASCII byte`, `Q = -10*log10(P_err)`, clamped to `[0, Q_MAX]`.
+/// `P_err -> Phred ASCII byte`, `Q = -10*log10(P_err)`, clamped to `[Q_MIN, Q_MAX]`.
 pub(crate) fn err_to_phred(p_err: f32) -> u8 {
     let p_err = p_err.clamp(f32::MIN_POSITIVE, 1.0);
-    let q = (-10.0 * p_err.log10()).round().clamp(0.0, Q_MAX as f32);
+    let q = (-10.0 * p_err.log10())
+        .round()
+        .clamp(Q_MIN as f32, Q_MAX as f32);
     (QUAL_ASCII_OFFSET + q as i32) as u8
 }
 
@@ -248,7 +250,8 @@ mod tests {
 
     #[test]
     fn err_to_phred_boundary_values() {
-        assert_eq!(err_to_phred(1.0), q_byte(0));
+        // p_err = 1.0 -> Q = 0 exactly, clamped up to the Q_MIN floor
+        assert_eq!(err_to_phred(1.0), q_byte(Q_MIN));
         // p_err = EPS_SYS floor -> Q = 40 exactly
         assert_eq!(err_to_phred(EPS_SYS), q_byte(Q_MAX));
     }
@@ -268,8 +271,8 @@ mod tests {
         let q = vote_qscore(&bin_scores, 0);
         assert_eq!(
             q,
-            q_byte(0),
-            "overwhelming contrary evidence should saturate to Q0, not NaN"
+            q_byte(Q_MIN),
+            "overwhelming contrary evidence should saturate to the Q_MIN floor, not NaN"
         );
     }
 
