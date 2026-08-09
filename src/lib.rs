@@ -7,6 +7,7 @@ use pbars::{
     get_parse_reads_spinner, set_parse_reads_spinner_finish, track_progress, PBarNotification,
 };
 
+use flate2::{write::GzEncoder, Compression};
 use glob::glob;
 use rustc_hash::FxHashSet as HashSet;
 use std::fs::metadata;
@@ -271,8 +272,31 @@ fn correction_writer<U: AsRef<Path>>(
     consensus_recv: Receiver<(usize, Vec<u8>, Vec<u8>)>,
     pbar_sender: Sender<PBarNotification>,
 ) {
-    let file = File::create(output_path).unwrap();
-    let mut writer = BufWriter::new(file);
+    let file = File::create(&output_path).unwrap();
+
+    // BufWriter wraps the encoder so that deflate is called once per buffer, not per field
+    if is_gzip(output_path.as_ref()) {
+        let mut writer = BufWriter::new(GzEncoder::new(file, Compression::default()));
+        write_corrected(&mut writer, reads, consensus_recv, pbar_sender);
+        writer.into_inner().unwrap().finish().unwrap();
+    } else {
+        let mut writer = BufWriter::new(file);
+        write_corrected(&mut writer, reads, consensus_recv, pbar_sender);
+        writer.flush().unwrap();
+    }
+}
+
+fn is_gzip(path: &Path) -> bool {
+    path.extension()
+        .map_or(false, |e| e.eq_ignore_ascii_case("gz"))
+}
+
+fn write_corrected<W: Write>(
+    writer: &mut W,
+    reads: &[HAECRecord],
+    consensus_recv: Receiver<(usize, Vec<u8>, Vec<u8>)>,
+    pbar_sender: Sender<PBarNotification>,
+) {
     let mut processed: HashSet<usize> = HashSet::default();
 
     loop {
@@ -281,7 +305,7 @@ fn correction_writer<U: AsRef<Path>>(
             Err(_) => break,
         };
 
-        write_sequence(&seq, &qual, &reads[rid], &mut writer).unwrap();
+        write_sequence(&seq, &qual, &reads[rid], writer).unwrap();
         processed.insert(rid);
         pbar_sender.send(PBarNotification::Inc).unwrap();
     }
@@ -289,7 +313,7 @@ fn correction_writer<U: AsRef<Path>>(
     for (rid, read) in reads.iter().enumerate() {
         if !processed.contains(&rid) {
             let seq = Vec::<u8>::from(&read.seq);
-            write_sequence(&seq, &read.qual, read, &mut writer).unwrap();
+            write_sequence(&seq, &read.qual, read, writer).unwrap();
         }
     }
 }
@@ -359,5 +383,73 @@ fn prepare_cuda_devices(devices: &[usize]) -> Vec<usize> {
 
         // Logical IDs match order of requested devices
         (0..devices.len()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use flate2::read::GzDecoder;
+    use std::fs::{read, remove_file};
+
+    fn test_read(id: &[u8], seq: &[u8]) -> HAECRecord {
+        HAECRecord {
+            id: id.to_vec(),
+            description: Some(b"len=8".to_vec()),
+            seq: seq.into(),
+            qual: vec![b'I'; seq.len()],
+        }
+    }
+
+    fn correct_to<P: AsRef<Path>>(reads: &[HAECRecord], path: P) {
+        let (cons_sender, cons_recv) = unbounded();
+        let (pbar_sender, _pbar_recv) = unbounded();
+
+        // Only the first read is corrected, the second one is copied as-is
+        cons_sender
+            .send((0, b"ACGTACGT".to_vec(), vec![b'5'; 8]))
+            .unwrap();
+        drop(cons_sender);
+
+        correction_writer(reads, path, cons_recv, pbar_sender);
+    }
+
+    #[test]
+    fn gzipped_output_matches_plain_output() {
+        let reads = [
+            test_read(b"read1", b"AAAACCCC"),
+            test_read(b"read2", b"GGGGTTTT"),
+        ];
+
+        let dir = std::env::temp_dir();
+        let plain_path = dir.join("herro_test_corrected.fq");
+        let gz_path = dir.join("herro_test_corrected.fq.gz");
+
+        correct_to(&reads, &plain_path);
+        correct_to(&reads, &gz_path);
+
+        let plain = read(&plain_path).unwrap();
+        let mut decompressed = Vec::new();
+        GzDecoder::new(&read(&gz_path).unwrap()[..])
+            .read_to_end(&mut decompressed)
+            .unwrap();
+
+        remove_file(&plain_path).unwrap();
+        remove_file(&gz_path).unwrap();
+
+        assert_eq!(
+            String::from_utf8(plain.clone()).unwrap(),
+            "@read1 len=8\nACGTACGT\n+\n55555555\n@read2 len=8\nGGGGTTTT\n+\nIIIIIIII\n"
+        );
+        assert_eq!(decompressed, plain);
+    }
+
+    #[test]
+    fn gzip_is_detected_from_the_extension() {
+        assert!(is_gzip(Path::new("corrected.fq.gz")));
+        assert!(is_gzip(Path::new("corrected.fastq.GZ")));
+        assert!(!is_gzip(Path::new("corrected.fq")));
+        assert!(!is_gzip(Path::new("corrected.fastq")));
     }
 }

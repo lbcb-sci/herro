@@ -107,7 +107,7 @@ struct InferenceArgs {
     #[arg(help = "Path to the fastq reads (can be gzipped)")]
     reads: String,
 
-    #[arg(help = "Path to the corrected reads (FASTQ)")]
+    #[arg(help = "Path to the corrected reads (FASTQ; gzip-compressed if the path ends with .gz)")]
     output: String,
 }
 
