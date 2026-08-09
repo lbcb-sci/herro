@@ -274,9 +274,11 @@ fn correction_writer<U: AsRef<Path>>(
 ) {
     let file = File::create(&output_path).unwrap();
 
-    // BufWriter wraps the encoder so that deflate is called once per buffer, not per field
+    // BufWriter wraps the encoder so that deflate is called once per buffer, not per field.
+    // Level 1 is used because the default level 6 compresses corrected reads slower than the
+    // pipeline produces them; level 1 is much faster for a slightly larger output.
     if is_gzip(output_path.as_ref()) {
-        let mut writer = BufWriter::new(GzEncoder::new(file, Compression::default()));
+        let mut writer = BufWriter::new(GzEncoder::new(file, Compression::new(1)));
         write_corrected(&mut writer, reads, consensus_recv, pbar_sender);
         writer.into_inner().unwrap().finish().unwrap();
     } else {
