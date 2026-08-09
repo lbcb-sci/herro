@@ -24,7 +24,6 @@ use crate::{
     features::{FeatsGenOutput, InferenceOutput},
     inference::inference_worker,
     overlaps::alignment_reader,
-    qscore::clamp_qual_byte,
 };
 
 mod aligners;
@@ -290,8 +289,7 @@ fn correction_writer<U: AsRef<Path>>(
     for (rid, read) in reads.iter().enumerate() {
         if !processed.contains(&rid) {
             let seq = Vec::<u8>::from(&read.seq);
-            let qual: Vec<u8> = read.qual.iter().map(|&q| clamp_qual_byte(q)).collect();
-            write_sequence(&seq, &qual, read, &mut writer).unwrap();
+            write_sequence(&seq, &read.qual, read, &mut writer).unwrap();
         }
     }
 }

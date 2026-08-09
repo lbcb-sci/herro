@@ -13,11 +13,10 @@ use crate::features::SupportedPos;
 
 use crate::haec_io::HAECRecord;
 use crate::inference::BASES_MAP;
-use crate::qscore::{clamp_qual_byte, model_qscore, vote_qscore, WeightTable};
+use crate::qscore::insertion_qual;
 
 const BASES_UPPER: [u8; 10] = [b'A', b'C', b'G', b'T', b'*', b'A', b'C', b'G', b'T', b'*'];
 const BASES_UPPER_COUNTER: [usize; 10] = [0, 1, 2, 3, 4, 0, 1, 2, 3, 4];
-const GAP_BIN: usize = 4;
 
 // Bases, tidx, supported, logits
 pub(crate) struct ConsensusWindow {
@@ -84,10 +83,20 @@ where
     heap.into_sorted_vec().into_iter().map(|r| r.0).collect()
 }
 
+/// The qual byte the corrected read carries for one emitted base: the target's own, copied from
+/// pileup row 0, or -- for an insertion, which the target has no base and hence no qual for --
+/// the local median around `anchor`, the target position the insertion follows.
+fn column_qual(read: &HAECRecord, is_insertion: bool, anchor: usize, tqual: u8) -> u8 {
+    if is_insertion {
+        insertion_qual(&read.qual, anchor)
+    } else {
+        tqual
+    }
+}
+
 fn consensus(
     data: ConsensusData,
     counts: &mut [u8],
-    weights: &WeightTable,
     read: &HAECRecord,
     window_size: usize,
 ) -> (Vec<u8>, Vec<u8>) {
@@ -95,14 +104,16 @@ fn consensus(
     let mut corrected_quals: Vec<u8> = Vec::new();
 
     for window in data.iter() {
+        let win_start = window.wid as usize * window_size;
+
         if window.n_alns < 2 {
-            let start = window.wid as usize * window_size;
             let end = ((window.wid as usize + 1) * window_size).min(read.seq.len());
             let old_len = corrected.len();
-            corrected.resize(old_len + (end - start), 0);
-            read.seq.get_subseq(start..end, &mut corrected[old_len..]);
+            corrected.resize(old_len + (end - win_start), 0);
+            read.seq
+                .get_subseq(win_start..end, &mut corrected[old_len..]);
 
-            corrected_quals.extend(read.qual[start..end].iter().map(|&q| clamp_qual_byte(q)));
+            corrected_quals.extend_from_slice(&read.qual[win_start..end]);
             continue;
         }
 
@@ -124,7 +135,10 @@ fn consensus(
 
         let (mut pos, mut ins) = (-1i32, 0);
         for (col, qcol) in bases.axis_iter(Axis(0)).zip(quals.axis_iter(Axis(0))) {
-            if col[0] == BASES_MAP[b'*' as usize] {
+            // A column the target has no base in: whatever gets emitted here is an insertion,
+            // with no qual of its own to copy.
+            let is_insertion = col[0] == BASES_MAP[b'*' as usize];
+            if is_insertion {
                 ins += 1;
             } else {
                 pos += 1;
@@ -171,25 +185,19 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
-                    corrected_quals.push(model_qscore(b, argmax as usize));
+                    corrected_quals.push(column_qual(
+                        read,
+                        is_insertion,
+                        win_start + pos as usize,
+                        qcol[0],
+                    ));
                 }
             } else {
-                // Count bases and accumulate each row's vote weight into its base's bin.
-                // Rows with no alignment ('.') contribute neither a count nor a weight.
+                // Count bases. Rows with no alignment ('.') do not contribute a count.
                 counts.iter_mut().for_each(|c| *c = 0);
-                let mut bin_scores = [0f32; 5];
-                col.iter().zip(qcol.iter()).for_each(|(&b, &q)| {
+                col.iter().for_each(|&b| {
                     if b != BASES_MAP[b'.' as usize] {
-                        let bin = BASES_UPPER_COUNTER[b as usize];
-                        counts[bin] += 1;
-
-                        // Gaps carry no real quality (the quals array only holds a b'!'
-                        // placeholder there), so they are weighted at Q_GAP instead.
-                        bin_scores[bin] += if bin == GAP_BIN {
-                            weights.weight_for_gap()
-                        } else {
-                            weights.weight_for_qual_byte(q)
-                        };
+                        counts[BASES_UPPER_COUNTER[b as usize]] += 1;
                     }
                 });
 
@@ -225,11 +233,12 @@ fn consensus(
 
                 if base != b'*' {
                     corrected.push(base);
-
-                    // `base` is uppercase ACGT here, for which BASES_MAP is the inverse of
-                    // BASES_UPPER and so yields the bin index directly.
-                    let called_bin = BASES_MAP[base as usize] as usize;
-                    corrected_quals.push(vote_qscore(&bin_scores, called_bin));
+                    corrected_quals.push(column_qual(
+                        read,
+                        is_insertion,
+                        win_start + pos as usize,
+                        qcol[0],
+                    ));
                 }
             }
         }
@@ -246,7 +255,6 @@ pub(crate) fn consensus_worker(
 ) {
     let mut consensus_data = HashMap::default();
     let mut counts = [0u8; 5];
-    let weights = WeightTable::new();
     loop {
         let output = match receiver.recv() {
             Ok(output) => output,
@@ -264,13 +272,8 @@ pub(crate) fn consensus_worker(
                 let mut windows = consensus_data.remove(&rid).unwrap();
                 windows.sort_by_key(|cw| cw.wid);
 
-                let (seq, quals) = consensus(
-                    windows,
-                    &mut counts,
-                    &weights,
-                    &reads[rid as usize],
-                    window_size,
-                );
+                let (seq, quals) =
+                    consensus(windows, &mut counts, &reads[rid as usize], window_size);
                 sender.send((rid as usize, seq, quals)).unwrap();
             }
         }
@@ -281,19 +284,30 @@ pub(crate) fn consensus_worker(
 mod tests {
     use super::*;
     use crate::haec_io::HAECSeq;
-    use crate::qscore::clamp_qual_byte;
     use ndarray::Array2;
 
-    const Q10: u8 = 33 + 10;
     const Q20: u8 = 33 + 20;
     const Q30: u8 = 33 + 30;
     const Q_PLACEHOLDER: u8 = b'!'; // what features.rs writes where no base aligned
+    const GAP: u8 = 4; // BASES_MAP['*'], a column the target read has no base in
 
     fn q_byte(q: u8) -> u8 {
         33 + q
     }
 
-    /// Single-position window with no model support, so every test below takes the Case 3 path.
+    /// Pileup arrays from one `(bases, quals)` pair per column, each holding one entry per row.
+    /// Row 0 is the target read.
+    fn pileup(cols: &[(&[u8], &[u8])]) -> (Array2<u8>, Array2<u8>) {
+        let n_rows = cols[0].0.len();
+        let bases: Vec<u8> = cols.iter().flat_map(|(b, _)| b.iter().copied()).collect();
+        let quals: Vec<u8> = cols.iter().flat_map(|(_, q)| q.iter().copied()).collect();
+        (
+            Array2::from_shape_vec((cols.len(), n_rows), bases).unwrap(),
+            Array2::from_shape_vec((cols.len(), n_rows), quals).unwrap(),
+        )
+    }
+
+    /// Single-position window with no model support, so it takes the Case 3 path.
     fn vote_window(row_bases: Vec<u8>, row_quals: Vec<u8>) -> ConsensusWindow {
         let n_rows = row_bases.len();
         ConsensusWindow::new(
@@ -320,10 +334,11 @@ mod tests {
     }
 
     #[test]
-    fn case1_copies_uncorrected_bases_and_clamped_quals() {
+    fn case1_copies_uncorrected_bases_and_original_quals() {
         let window_size = 4;
         let seq = "ACGTACGT";
-        // Chosen to exercise: below Q_MIN (33), passthrough (40, 60), above Q_MAX (126)
+        // Includes the two bytes the old [Q_MIN, Q_MAX] clamp used to move (33 = Q0 and
+        // 126 = Q93): they must now pass through untouched.
         let raw_quals = vec![33, 40, 60, 126, 50, 55, 33, 70];
         let read = make_read(seq, raw_quals.clone());
 
@@ -341,16 +356,10 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, window_size);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
 
         assert_eq!(corrected, seq.as_bytes()[..window_size].to_vec());
-
-        let expected_quals: Vec<u8> = raw_quals[..window_size]
-            .iter()
-            .map(|&q| clamp_qual_byte(q))
-            .collect();
-        assert_eq!(quals, expected_quals);
+        assert_eq!(quals, raw_quals[..window_size].to_vec());
         assert_eq!(corrected.len(), quals.len());
     }
 
@@ -375,24 +384,21 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, window_size);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, window_size);
 
         assert_eq!(corrected, b"CG".to_vec());
-        assert_eq!(quals, vec![clamp_qual_byte(60), clamp_qual_byte(70)]);
+        assert_eq!(quals, vec![60, 70]);
     }
 
     #[test]
-    fn case2_model_corrected_base_uses_model_qscore() {
-        use crate::features::SupportedPos;
-        use crate::qscore::model_qscore;
-
-        let read = make_read("A", vec![40]);
+    fn case2_model_corrected_base_keeps_the_targets_original_qual() {
+        // The model confidently replaces the target's 'A' with 'C'. The emitted qual is still
+        // the target's own byte at that position -- the model's confidence does not enter it.
+        let read = make_read("A", vec![q_byte(10)]);
 
         // One position, 3 pileup rows; only col[0] (not a gap) drives pos/ins tracking here.
-        let bases = Array2::from_elem((1, 3), 0u8); // 0 = BASES_MAP['A'], i.e. not a gap
-        let quals = Array2::from_elem((1, 3), 0u8);
-        let logits = vec![10.0, -10.0, -10.0, -10.0, -10.0]; // argmax -> 'A' (index 0)
+        let (bases, quals) = pileup(&[(&[0, 0, 0], &[q_byte(10), Q30, Q30])]);
+        let logits = vec![-10.0, 10.0, -10.0, -10.0, -10.0]; // argmax -> 'C' (index 1)
 
         let window = ConsensusWindow::new(
             0,
@@ -404,21 +410,18 @@ mod tests {
             Vec::new(),
             vec![SupportedPos::new(0, 0)],
             Some(vec![0.0]),
-            Some(vec![logits.clone()]),
+            Some(vec![logits]),
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
-        assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![model_qscore(&logits, 0)]);
+        assert_eq!(corrected, b"C".to_vec());
+        assert_eq!(quals, vec![q_byte(10)]);
     }
 
     #[test]
     fn case2_gap_called_base_emits_no_base_and_no_qual() {
-        use crate::features::SupportedPos;
-
         let read = make_read("A", vec![40]);
 
         let bases = Array2::from_elem((1, 3), 0u8); // pos 0, not a gap column
@@ -439,25 +442,23 @@ mod tests {
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
         assert!(corrected.is_empty(), "gap call must not emit a base");
         assert!(quals.is_empty(), "gap call must not emit a qual either");
     }
 
     #[test]
-    fn case2_multiple_supported_positions_each_get_independent_qscore() {
-        use crate::features::SupportedPos;
-        use crate::qscore::model_qscore;
-
-        let read = make_read("AG", vec![40, 40]);
+    fn case2_each_position_takes_its_own_targets_qual_not_the_model_confidence() {
+        let read = make_read("AG", vec![q_byte(10), q_byte(30)]);
 
         // Two consecutive real positions (pos 0 and pos 1, both ins 0).
-        let bases = Array2::from_elem((2, 3), 0u8);
-        let quals = Array2::from_elem((2, 3), 0u8);
+        let (bases, quals) = pileup(&[
+            (&[0, 0, 0], &[q_byte(10), Q30, Q30]),
+            (&[2, 2, 2], &[q_byte(30), Q30, Q30]),
+        ]);
         let logits_a = vec![10.0, -10.0, -10.0, -10.0, -10.0]; // confident 'A'
-        let logits_g = vec![-5.0, -5.0, 3.0, -5.0, -5.0]; // less confident 'G'
+        let logits_g = vec![-5.0, -5.0, 3.0, -5.0, -5.0]; // much less confident 'G'
 
         let window = ConsensusWindow::new(
             0,
@@ -469,34 +470,33 @@ mod tests {
             Vec::new(),
             vec![SupportedPos::new(0, 0), SupportedPos::new(1, 0)],
             Some(vec![0.0, 0.0]),
-            Some(vec![logits_a.clone(), logits_g.clone()]),
+            Some(vec![logits_a, logits_g]),
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 2);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 2);
 
+        // The quals track the target read (Q10 then Q30) and run opposite to the model's
+        // confidence (very high then low), which is exactly the point: they are unrelated.
         assert_eq!(corrected, b"AG".to_vec());
-        assert_eq!(
-            quals,
-            vec![model_qscore(&logits_a, 0), model_qscore(&logits_g, 2)]
-        );
-        // The two positions have different confidence, so they must not collapse to the same Q.
-        assert_ne!(quals[0], quals[1]);
+        assert_eq!(quals, vec![q_byte(10), q_byte(30)]);
     }
 
     #[test]
-    fn case2_supported_insertion_position_uses_correct_pos_ins_key() {
-        use crate::features::SupportedPos;
-        use crate::qscore::model_qscore;
+    fn case2_insertion_takes_the_local_median_of_the_targets_quals() {
+        // The window covers only the read's first position; the rest of the read exists so the
+        // insertion's median window has real neighbours to draw on.
+        let read = make_read(
+            "ACGTA",
+            vec![q_byte(10), q_byte(30), q_byte(20), q_byte(40), q_byte(50)],
+        );
 
-        let read = make_read("AC", vec![40, 40]);
-
-        // Row 0: real position (pos 0, ins 0), left unsupported -> falls through to Case 3.
-        // Row 1: insertion column (col[0] == gap code) -> pos stays 0, ins becomes 1.
-        let mut bases = Array2::from_elem((2, 3), 0u8);
-        bases.row_mut(1).fill(4); // BASES_MAP['*'] == 4, marks an insertion column
-        let quals = Array2::from_elem((2, 3), 0u8);
+        // Column 0: real position (pos 0, ins 0), left unsupported -> falls through to Case 3.
+        // Column 1: insertion column (col[0] == gap code) -> pos stays 0, ins becomes 1.
+        let (bases, quals) = pileup(&[
+            (&[0, 0, 0], &[q_byte(10), Q30, Q30]),
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]),
+        ]);
         let logits_c = vec![-5.0, 10.0, -5.0, -5.0, -5.0]; // confident 'C', at the insertion slot
 
         let window = ConsensusWindow::new(
@@ -509,129 +509,170 @@ mod tests {
             Vec::new(),
             vec![SupportedPos::new(0, 1)], // keyed on the insertion (pos=0, ins=1), not (0, 0)
             Some(vec![0.0]),
-            Some(vec![logits_c.clone()]),
+            Some(vec![logits_c]),
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 2);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 5);
 
-        // Row 0 (unsupported) goes through Case 3's majority vote over all-'A' rows -> 'A'.
-        // Row 1 (supported at (0,1)) is scored by the model, independent of its gap-coded col[0].
+        // Column 0 (unsupported) goes through Case 3's majority vote over all-'A' rows -> 'A',
+        // carrying the target's own Q10. Column 1 is a model-called insertion anchored at read
+        // position 0, so it takes the median of Phred [10, 30, 20] = Q20.
         assert_eq!(corrected, b"AC".to_vec());
-        assert_eq!(corrected.len(), quals.len(), "bases and quals must stay in sync across cases");
-        assert_eq!(quals[1], model_qscore(&logits_c, 1));
+        assert_eq!(quals, vec![q_byte(10), q_byte(20)]);
+        assert_ne!(
+            quals[1], Q_PLACEHOLDER,
+            "must not emit row 0's gap placeholder"
+        );
     }
 
     #[test]
-    fn case3_eight_two_split_matches_pinned_vote_qscore() {
-        // 8 rows vote 'A', 2 vote 'C', all at Q20 -> S = [8w20, 2w20, 0, 0, 0], called bin 0.
-        // Same scores as qscore's vote_qscore_eight_two_split_at_q20 test, which pins Q22.
-        let read = make_read("A", vec![q_byte(40)]);
-        let window = vote_window(vec![0, 0, 0, 0, 0, 0, 0, 0, 1, 1], vec![Q20; 10]);
+    fn case3_vote_corrected_base_keeps_the_targets_original_qual() {
+        // Four Q30 rows outvote the target's own 'A' -> 'C' is emitted, but carrying the
+        // target's Q10, not the quality of the rows that outvoted it.
+        let read = make_read("A", vec![q_byte(10)]);
+        let window = vote_window(vec![0, 1, 1, 1, 1], vec![q_byte(10), Q30, Q30, Q30, Q30]);
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
-        assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(22)]);
+        assert_eq!(corrected, b"C".to_vec());
+        assert_eq!(quals, vec![q_byte(10)]);
     }
 
     #[test]
-    fn case3_equal_vote_counts_weighted_by_each_rows_own_quality() {
-        // 5 rows vote 'A' at Q30, 5 vote 'C' at Q10: equal COUNTS (5-5), so this only
-        // distinguishes the two bases via per-row quality. A implementation that hardcoded a
-        // single quality (e.g. Q20) for every row -- rather than reading each row's own qual
-        // byte -- would still pass every other Case 3 test here, since they all use one
-        // uniform quality across every voting row.
-        let read = make_read("A", vec![q_byte(40)]);
-        let mut row_quals = vec![Q30; 5];
-        row_quals.extend(vec![Q10; 5]);
-        let window = vote_window(vec![0, 0, 0, 0, 0, 1, 1, 1, 1, 1], row_quals);
-
-        let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
-
-        // 5-5 tie -> resolved to the target base ('A', col[0]).
-        // S = [5*w(Q30), 5*w(Q10), 0, 0, 0] -> p_err ~= 0.0340134 -> Q ~= 14.68 -> rounds to 15.
-        // A fixed-Q20 bug would instead score both bins identically (S = [5w20, 5w20, ...]),
-        // giving Q3 instead of Q15 -- so this catches that class of bug.
-        assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(15)]);
-    }
-
-    #[test]
-    fn case3_gap_rows_weighted_at_q_gap_not_the_placeholder_qual() {
-        // 3 rows vote 'A' at Q20, 3 vote gap. The quals array holds only b'!' (Q0) for the gap
-        // rows, so reading it instead of substituting Q_GAP would under-weight the gap bin and
-        // inflate the score to Q7 rather than the correct Q5.
-        let read = make_read("A", vec![q_byte(40)]);
+    fn case3_unaligned_rows_are_not_counted() {
+        // '.' rows must be skipped entirely: BASES_MAP['.'] is 10, past the end of the 5-bin
+        // counts array, so counting one would panic rather than merely skew the call.
+        let read = make_read("A", vec![q_byte(10)]);
         let window = vote_window(
-            vec![0, 0, 0, 4, 4, 4],
-            vec![Q20, Q20, Q20, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER],
+            vec![0, 0, 10, 10, 10],
+            vec![q_byte(10), Q20, b'~', b'~', b'~'],
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
-        // 3-3 tie with the target base among the winners -> target base 'A' is kept.
         assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(5)]);
-    }
-
-    #[test]
-    fn case3_unaligned_rows_contribute_no_weight() {
-        // 8 rows vote 'A' at Q20; the 2 '.' rows carry a high qual byte but must be skipped
-        // entirely (they are also outside BASES_UPPER_COUNTER's range, so including them
-        // would panic rather than merely skew the score).
-        let read = make_read("A", vec![q_byte(40)]);
-        let window = vote_window(
-            vec![0, 0, 0, 0, 0, 0, 0, 0, 10, 10],
-            vec![Q20, Q20, Q20, Q20, Q20, Q20, Q20, Q20, b'~', b'~'],
-        );
-
-        let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
-
-        // S = [8*w20, 0, 0, 0, 0] -> the unanimous-8 score, unaffected by the '.' rows.
-        assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(25)]);
+        assert_eq!(quals, vec![q_byte(10)]);
     }
 
     #[test]
     fn case3_reverse_strand_rows_fold_into_forward_bins() {
-        // 4 'A' + 4 'a' + 2 'C' must score identically to 8 'A' + 2 'C': lowercase
-        // (reverse-strand) rows contribute their weight to the same bin as uppercase.
-        let read = make_read("A", vec![q_byte(40)]);
-        let mixed = vote_window(vec![0, 0, 0, 0, 5, 5, 5, 5, 1, 1], vec![Q20; 10]);
+        // Lowercase (reverse-strand) rows count towards the same base as uppercase: 2 'G' plus
+        // 2 'g' is a 4-count that outvotes the target's 'A'.
+        let read = make_read("A", vec![q_byte(10)]);
+        let window = vote_window(vec![0, 2, 2, 7, 7], vec![q_byte(10), Q20, Q20, Q20, Q20]);
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![mixed], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
-        assert_eq!(corrected, b"A".to_vec());
-        assert_eq!(quals, vec![q_byte(22)]);
+        assert_eq!(corrected, b"G".to_vec());
+        assert_eq!(quals, vec![q_byte(10)]);
     }
 
     #[test]
     fn case3_gap_called_emits_no_base_and_no_qual() {
         // 4 gap rows outvote the single 'A' target row -> the column is deleted, so neither a
         // base nor a qual byte may be emitted.
-        let read = make_read("A", vec![q_byte(40)]);
+        let read = make_read("A", vec![q_byte(10)]);
         let window = vote_window(
-            vec![0, 4, 4, 4, 4],
-            vec![Q20, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER, Q_PLACEHOLDER],
+            vec![0, GAP, GAP, GAP, GAP],
+            vec![
+                q_byte(10),
+                Q_PLACEHOLDER,
+                Q_PLACEHOLDER,
+                Q_PLACEHOLDER,
+                Q_PLACEHOLDER,
+            ],
         );
 
         let mut counts = [0u8; 5];
-        let weights = WeightTable::new();
-        let (corrected, quals) = consensus(vec![window], &mut counts, &weights, &read, 1);
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 1);
 
         assert!(corrected.is_empty(), "gap call must not emit a base");
         assert!(quals.is_empty(), "gap call must not emit a qual either");
+    }
+
+    // --- Insertions: the one case with no original qual to copy ---
+
+    #[test]
+    fn run_of_four_insertions_all_share_the_anchors_median() {
+        // Four insertion columns following one target base. They share an anchor, so they all
+        // get the same qual: the estimator has nothing that distinguishes them. That makes a
+        // 4-base insertion look exactly as trustworthy as a 1-base one, which is optimistic and
+        // is a known, accepted property rather than a bug.
+        let phred = [10u8, 12, 35, 14, 16, 18, 20, 22];
+        let read = make_read("ACGTACGT", phred.iter().map(|&q| q_byte(q)).collect());
+
+        let (bases, quals) = pileup(&[
+            (&[0, 0, 0], &[q_byte(10), Q30, Q30]),      // pos 0, 'A'
+            (&[1, 1, 1], &[q_byte(12), Q30, Q30]),      // pos 1, 'C'
+            (&[2, 2, 2], &[q_byte(35), Q30, Q30]),      // pos 2, 'G'
+            (&[3, 3, 3], &[q_byte(14), Q30, Q30]),      // pos 3, 'T' <- the anchor
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]), // ins 1
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]), // ins 2
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]), // ins 3
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]), // ins 4
+        ]);
+
+        let window =
+            ConsensusWindow::new(0, 0, 2, 1, bases, quals, Vec::new(), Vec::new(), None, None);
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 8);
+
+        // Anchor is read position 3, so the window is Phred [12, 35, 14, 16, 18] -> median 16.
+        // Note that differs from the anchor's own Q14, so this also rules out simply copying
+        // the anchor's qual.
+        assert_eq!(corrected, b"ACGTCCCC".to_vec());
+        assert_eq!(
+            quals,
+            vec![
+                q_byte(10),
+                q_byte(12),
+                q_byte(35),
+                q_byte(14),
+                q_byte(16),
+                q_byte(16),
+                q_byte(16),
+                q_byte(16),
+            ]
+        );
+        assert_eq!(corrected.len(), quals.len());
+    }
+
+    #[test]
+    fn insertion_anchor_accounts_for_the_window_offset() {
+        // wid 1 at window_size 4 -> the anchor is read position 4, not 0. The quals are shaped
+        // so the two choices give different medians (Q35 vs Q1).
+        let phred = [1u8, 1, 40, 40, 10, 12, 35, 14];
+        let read = make_read("ACGTACGT", phred.iter().map(|&q| q_byte(q)).collect());
+
+        let (bases, quals) = pileup(&[
+            (&[0, 0, 0], &[q_byte(10), Q30, Q30]), // read position 4, 'A'
+            (&[GAP, 1, 1], &[Q_PLACEHOLDER, Q30, Q30]), // insertion after it
+        ]);
+
+        let window = ConsensusWindow::new(
+            0,
+            1, // second window
+            2,
+            2,
+            bases,
+            quals,
+            Vec::new(),
+            Vec::new(),
+            None,
+            None,
+        );
+
+        let mut counts = [0u8; 5];
+        let (corrected, quals) = consensus(vec![window], &mut counts, &read, 4);
+
+        // Anchor 4 -> window Phred [40, 40, 10, 12, 35] -> median 35. Ignoring the window
+        // offset would anchor at 0 and give [1, 1, 40] -> median 1.
+        assert_eq!(corrected, b"AC".to_vec());
+        assert_eq!(quals, vec![q_byte(10), q_byte(35)]);
     }
 }
